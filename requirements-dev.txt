@@ -1,6 +1,6 @@
 -r requirements.txt
 
-# Test and quality dependencies for EHAgent v0.1.0.
+# Test and quality dependencies for EHAgent v0.2.0.
 mypy==1.17.0
 pytest==8.4.1
 pytest-cov==6.2.1

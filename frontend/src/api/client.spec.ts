@@ -10,7 +10,7 @@ describe('local API client', () => {
   it('parses the typed health response', async () => {
     const payload = {
       status: 'ok',
-      version: '0.1.0',
+      version: '0.2.0',
       environment: 'test',
       database: 'ok',
       runtime_mode: 'UNINITIALIZED',

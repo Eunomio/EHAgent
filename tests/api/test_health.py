@@ -11,7 +11,7 @@ def test_health_reports_foundational_dependencies(client: TestClient) -> None:
     assert body["status"] == "ok"
     assert body["database"] == "ok"
     assert body["runtime_mode"] == "UNINITIALIZED"
-    assert body["version"] == "0.1.0"
+    assert body["version"] == "0.2.0"
 
 
 def test_version_endpoint(client: TestClient) -> None:

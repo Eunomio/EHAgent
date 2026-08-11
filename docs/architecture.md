@@ -3,7 +3,7 @@
 ## Layers
 
 ```text
-API / Vue shells
+Resident API / Engineering API / Vue product modules
     ↓
 Application services
     ↓
@@ -34,11 +34,26 @@ source_type=REAL_DEVICE
 
 Neither field may be rewritten after event creation.
 
-## Planned next vertical slice
+## Implemented v0.2.0 vertical slice
 
-1. persisted cleanup-task state machine;
-2. resident four-action task card;
-3. Replay before/after rescan sequence;
-4. scene calibration API and Konva editor;
-5. quality gate and optional vision dependencies;
-6. `EzvizCameraAdapter` after the platform PoC.
+```text
+Replay material or explicitly labelled manual image
+    ↓
+immutable ObservationEvent with source_type + runtime_mode
+    ↓
+quality gate → deterministic corridor rule
+    ↓
+persisted risk task → resident four-action feedback
+    ↓
+DONE → RESCAN_PENDING → clear-corridor replay → RESOLVED
+```
+
+The resident view may display a commissioning task only as an explicit demonstration preview. Such a task keeps `is_demo=true`, triggers no external notification and must not enter real-device metrics.
+
+## Next vertical slice
+
+1. real replay manifest and frame-file ingestion rather than bundled case definitions;
+2. scene calibration API and editor;
+3. optional ONNX quality/detection pipeline behind the same analysis contract;
+4. task centre and dispute-review report;
+5. `EzvizCameraAdapter` only after the platform PoC.

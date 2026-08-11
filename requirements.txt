@@ -1,4 +1,4 @@
-# Runtime dependencies for EHAgent v0.1.0. Keep exact versions for reproducibility.
+# Runtime dependencies for EHAgent v0.2.0. Keep exact versions for reproducibility.
 alembic==1.16.4
 apscheduler==3.11.0
 fastapi==0.116.1

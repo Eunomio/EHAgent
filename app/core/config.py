@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     @field_validator("camera_provider")
     @classmethod
     def validate_camera_provider(cls, value: str) -> str:
-        """Keep provider selection explicit in the skeleton release."""
+        """Keep provider selection explicit in the demo release."""
 
         normalized = value.lower().strip()
         supported = {"replay", "manual", "ezviz"}

@@ -7,8 +7,10 @@ from fastapi import Header, HTTPException, Request, status
 
 from app.core.config import Settings
 from app.db.session import Database
+from app.services.demo_agent_service import DemoAgentService
 from app.services.observation_service import ObservationService
 from app.services.runtime_service import RuntimeService
+from app.services.task_service import TaskService
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "testclient"}
 
@@ -35,6 +37,18 @@ def get_observation_service(request: Request) -> ObservationService:
     """Resolve the observation service owned by the application."""
 
     return cast(ObservationService, request.app.state.observation_service)
+
+
+def get_demo_agent_service(request: Request) -> DemoAgentService:
+    """Resolve the deterministic demo agent owned by the application instance."""
+
+    return cast(DemoAgentService, request.app.state.demo_agent_service)
+
+
+def get_task_service(request: Request) -> TaskService:
+    """Resolve persisted resident task orchestration."""
+
+    return cast(TaskService, request.app.state.task_service)
 
 
 def require_engineering_access(

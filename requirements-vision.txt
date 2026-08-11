@@ -1,4 +1,4 @@
-# Optional phase-2 computer-vision dependencies. They are not required by v0.1.0.
+# Optional phase-2 computer-vision dependencies. They are not required by v0.2.0.
 numpy==2.2.6
 onnxruntime==1.22.1
 opencv-python-headless==4.11.0.86
