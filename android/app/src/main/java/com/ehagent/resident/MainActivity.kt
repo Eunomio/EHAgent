@@ -148,7 +148,7 @@ private fun ContactCard(name: String, onClick: () -> Unit) {
     Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
             RoundIcon(Icons.Rounded.FamilyRestroom, Color(0xFFE56F5B), Color(0xFFFFE9E4)); Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) { Text("需要陪伴或帮忙？", fontSize = 20.sp, fontWeight = FontWeight.Bold); Text("告诉$name联系您", color = Muted) }
+            Column(Modifier.weight(1f)) { Text("需要陪伴或帮忙？", fontSize = 20.sp, fontWeight = FontWeight.Bold); Text("告诉${name}联系您", color = Muted) }
             Button(onClick = onClick, shape = RoundedCornerShape(16.dp)) { Text("联系", fontSize = 17.sp) }
         }
     }
