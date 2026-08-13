@@ -16,5 +16,10 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: ruff check app tests
-      - run: pytest -q
-
+      - name: Run product API tests
+        run: python -m pytest -q 2>&1 | tee pytest-output.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-output
+          path: pytest-output.txt
