@@ -12,7 +12,6 @@ SENSITIVE_KEYS = {
     "app_secret",
     "authorization",
     "device_verify_code",
-    "engineering_api_key",
     "password",
     "secret",
     "token",

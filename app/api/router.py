@@ -1,11 +1,9 @@
-"""Versioned API router composition."""
-
 from fastapi import APIRouter
 
-from app.api.v1 import engineering, health, runtime, tasks
+from app.api.v1 import devices, health, ingest, resident
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(health.router)
-api_router.include_router(runtime.router)
-api_router.include_router(engineering.router)
-api_router.include_router(tasks.router)
+api_router.include_router(resident.router)
+api_router.include_router(devices.router)
+api_router.include_router(ingest.router)

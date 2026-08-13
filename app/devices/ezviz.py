@@ -1,0 +1,71 @@
+"""Minimal server-side EZVIZ Open Platform integration."""
+
+from typing import Any
+
+import httpx
+
+from app.core.config import Settings
+
+
+class EzvizError(RuntimeError):
+    pass
+
+
+class EzvizClient:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.client = httpx.AsyncClient(timeout=15)
+        self._token = settings.ezviz_access_token
+
+    @property
+    def configured(self) -> bool:
+        has_token = bool(self._token)
+        has_app = bool(self.settings.ezviz_app_key and self.settings.ezviz_app_secret)
+        return bool(self.settings.ezviz_device_serial and (has_token or has_app))
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+    async def token(self) -> str:
+        if self._token:
+            return self._token
+        if not self.settings.ezviz_app_key or not self.settings.ezviz_app_secret:
+            raise EzvizError("请先在.env中配置萤石AppKey和AppSecret")
+        response = await self.client.post(
+            f"{self.settings.ezviz_api_base_url}/api/lapp/token/get",
+            data={"appKey": self.settings.ezviz_app_key, "appSecret": self.settings.ezviz_app_secret},
+        )
+        payload = response.json()
+        if str(payload.get("code")) != "200":
+            raise EzvizError(payload.get("msg") or "获取萤石访问令牌失败")
+        self._token = str(payload["data"]["accessToken"])
+        return self._token
+
+    async def device_info(self) -> dict[str, Any]:
+        if not self.settings.ezviz_device_serial:
+            raise EzvizError("请先配置C6c设备序列号")
+        response = await self.client.post(
+            f"{self.settings.ezviz_api_base_url}/api/lapp/device/info",
+            data={"accessToken": await self.token(), "deviceSerial": self.settings.ezviz_device_serial},
+        )
+        payload = response.json()
+        if str(payload.get("code")) != "200":
+            raise EzvizError(payload.get("msg") or "读取C6c状态失败")
+        return dict(payload.get("data") or {})
+
+    async def capture(self) -> str:
+        response = await self.client.post(
+            f"{self.settings.ezviz_api_base_url}/api/lapp/device/capture",
+            data={
+                "accessToken": await self.token(),
+                "deviceSerial": self.settings.ezviz_device_serial,
+                "channelNo": self.settings.ezviz_channel_no,
+            },
+        )
+        payload = response.json()
+        if str(payload.get("code")) != "200":
+            raise EzvizError(payload.get("msg") or "C6c抓图失败")
+        url = (payload.get("data") or {}).get("picUrl")
+        if not url:
+            raise EzvizError("萤石接口未返回图片地址")
+        return str(url)

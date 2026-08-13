@@ -1,0 +1,151 @@
+from datetime import datetime
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from app.dependencies import SettingsDep, StoreDep
+
+router = APIRouter(prefix="/resident", tags=["resident"])
+
+
+class TaskAction(BaseModel):
+    action: Literal["done", "later", "need_help", "not_risk", "pause"]
+
+
+class HelpCreate(BaseModel):
+    request_type: Literal["contact", "safety", "sleep"] = "contact"
+    message: str = Field(default="希望家人联系我", min_length=1, max_length=300)
+
+
+class HelpUpdate(BaseModel):
+    status: Literal["seen", "contacted", "completed"]
+
+
+class SettingUpdate(BaseModel):
+    camera_paused: bool | None = None
+    sleep_alerts_paused: bool | None = None
+    contact_name: str | None = Field(default=None, max_length=40)
+    contact_phone: str | None = Field(default=None, max_length=30)
+    evidence_retention_days: int | None = Field(default=None, ge=1, le=30)
+
+
+def settings_payload(store: StoreDep) -> dict:
+    raw = store.settings()
+    return {
+        "camera_paused": raw.get("camera_paused") == "true",
+        "sleep_alerts_paused": raw.get("sleep_alerts_paused") == "true",
+        "contact_name": raw.get("contact_name", "家人"),
+        "contact_phone": raw.get("contact_phone", ""),
+        "evidence_retention_days": int(raw.get("evidence_retention_days", "7")),
+    }
+
+
+def sleep_alert(history: list[dict]) -> dict | None:
+    if len(history) < 7:
+        return None
+    baseline = sorted(item["duration_minutes"] for item in history[:7])[3]
+    if all(item["duration_minutes"] < baseline * 0.7 for item in history[:2]):
+        return {"title": "最近两晚睡眠时间和平时有些不同", "message": "您今天感觉怎么样？", "severity": "attention"}
+    return None
+
+
+@router.get("/dashboard")
+def dashboard(store: StoreDep, settings: SettingsDep) -> dict:
+    preferences = settings_payload(store)
+    sleep = store.latest_sleep()
+    task = store.latest_task()
+    hour = datetime.now().hour
+    greeting = "早上好" if hour < 11 else "下午好" if hour < 18 else "晚上好"
+    return {
+        "greeting": greeting,
+        "subtitle": "今天也安心生活",
+        "safety": {
+            "status": "paused" if preferences["camera_paused"] else "attention" if task else "ready",
+            "headline": "摄像头已暂停" if preferences["camera_paused"] else task["title"] if task else "等待下一次检查",
+            "detail": task["suggestion"] if task else f"检查区域：{settings.safety_area_name}",
+            "task": task,
+        },
+        "sleep": {
+            "status": "ready" if sleep else "empty",
+            "summary": sleep,
+            "headline": (
+                f"睡了{sleep['duration_minutes'] // 60}小时{sleep['duration_minutes'] % 60}分钟"
+                if sleep
+                else "睡眠数据暂未同步"
+            ),
+        },
+        "help": {
+            "pending": sum(item["status"] != "completed" for item in store.help_requests()),
+            "contact_name": preferences["contact_name"],
+            "contact_phone": preferences["contact_phone"],
+        },
+    }
+
+
+@router.get("/safety")
+def safety(store: StoreDep, settings: SettingsDep) -> dict:
+    return {
+        "area_name": settings.safety_area_name,
+        "camera_paused": settings_payload(store)["camera_paused"],
+        "task": store.latest_task(),
+        "recent_checks": store.recent_checks(),
+    }
+
+
+@router.post("/safety/tasks/{task_id}/actions")
+def act_on_task(task_id: str, payload: TaskAction, store: StoreDep) -> dict:
+    task = store.act_on_task(task_id, payload.action)
+    if task is None:
+        raise HTTPException(404, "没有找到这条安全提醒")
+    return task
+
+
+@router.get("/sleep")
+def sleep(store: StoreDep, settings: SettingsDep) -> dict:
+    history = store.sleep_history(14)
+    return {
+        "device_name": settings.sleep_device_name,
+        "latest": history[0] if history else None,
+        "history": history,
+        "baseline_ready": len(history) >= 7,
+        "alert": sleep_alert(history),
+        "alerts_paused": settings_payload(store)["sleep_alerts_paused"],
+    }
+
+
+@router.get("/help")
+def help_page(store: StoreDep) -> dict:
+    preferences = settings_payload(store)
+    return {
+        "contact_name": preferences["contact_name"],
+        "contact_phone": preferences["contact_phone"],
+        "requests": store.help_requests(),
+    }
+
+
+@router.post("/help")
+def create_help(payload: HelpCreate, store: StoreDep) -> dict:
+    return store.create_help_request(payload.request_type, payload.message)
+
+
+@router.put("/help/{request_id}")
+def update_help(request_id: str, payload: HelpUpdate, store: StoreDep) -> dict:
+    request = store.update_help(request_id, payload.status)
+    if request is None:
+        raise HTTPException(404, "没有找到这条联系请求")
+    return request
+
+
+@router.get("/settings")
+def get_settings(store: StoreDep) -> dict:
+    return settings_payload(store)
+
+
+@router.put("/settings")
+def update_settings(payload: SettingUpdate, store: StoreDep) -> dict:
+    raw = payload.model_dump(exclude_none=True)
+    store.update_settings(
+        {key: str(value).lower() if isinstance(value, bool) else str(value) for key, value in raw.items()}
+    )
+    return settings_payload(store)

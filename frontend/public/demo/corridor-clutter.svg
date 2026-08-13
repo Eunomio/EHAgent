@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" role="img" aria-labelledby="title desc">
-  <title id="title">走廊中部纸箱演示素材</title>
-  <desc id="desc">一个纸箱放在走廊中间，侵入绿色通行区域</desc>
-  <defs><linearGradient id="wall" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#e9ece8"/><stop offset="1" stop-color="#cfd5cf"/></linearGradient><linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#d6c8ad"/><stop offset="1" stop-color="#aa9473"/></linearGradient></defs>
-  <rect width="800" height="500" fill="url(#wall)"/><path d="M0 500 250 175h300L800 500Z" fill="url(#floor)"/><path d="M285 470 350 210h100l65 260Z" fill="#5bad78" opacity=".28" stroke="#287252" stroke-width="5" stroke-dasharray="14 10"/><path d="M0 0h175v500H0zM625 0h175v500H625z" fill="#d5dbd6"/><rect x="80" y="95" width="92" height="215" rx="4" fill="#8fa39a"/><rect x="628" y="78" width="92" height="232" rx="4" fill="#8fa39a"/>
-  <g transform="translate(325 300)"><path d="m0 40 118-24 70 42-122 31Z" fill="#a86d35"/><path d="m0 40 66 49v96L0 128Z" fill="#85502c"/><path d="m66 89 122-31v94L66 185Z" fill="#ba7c40"/><path d="m0 40 118-24 70 42-122 31Z" fill="none" stroke="#6e4228" stroke-width="5"/><path d="m93 22 67 43" stroke="#d9a76a" stroke-width="10"/></g>
-  <path d="M315 280h230v210H315z" fill="none" stroke="#c7472d" stroke-width="8" stroke-dasharray="18 10"/><rect x="28" y="28" width="294" height="62" rx="14" fill="#7b291e" opacity=".94"/><text x="54" y="69" fill="white" font-family="Microsoft YaHei, sans-serif" font-size="27" font-weight="700">演示：纸箱侵入通道</text>
-</svg>

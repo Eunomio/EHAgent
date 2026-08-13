@@ -1,0 +1,17 @@
+{
+  "sleep_start": "2026-08-12T22:41:00+08:00",
+  "sleep_end": "2026-08-13T06:32:00+08:00",
+  "duration_minutes": 471,
+  "respiratory_rate": 16.2,
+  "respiratory_min": 13.0,
+  "respiratory_max": 20.0,
+  "heart_rate": 62.0,
+  "heart_rate_min": 54.0,
+  "heart_rate_max": 79.0,
+  "bed_exit_count": 1,
+  "quality": "good",
+  "source": "ezviz_sleep_assistant",
+  "measured_at": "2026-08-13T06:35:00+08:00",
+  "samples": []
+}
+

@@ -1,11 +1,5 @@
-# Runtime dependencies for EHAgent v0.2.0. Keep exact versions for reproducibility.
-alembic==1.16.4
-apscheduler==3.11.0
 fastapi==0.116.1
 httpx==0.28.1
-pydantic==2.11.7
 pydantic-settings==2.10.1
-sqlalchemy==2.0.41
 structlog==25.4.0
-tenacity==9.1.2
 uvicorn[standard]==0.35.0

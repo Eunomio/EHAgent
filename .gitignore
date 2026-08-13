@@ -1,44 +1,16 @@
-# Secrets and local configuration
 .env
-.env.*
-!.env.example
-
-# Python
 .venv/
-.python/
-.uv-cache/
 __pycache__/
 *.py[cod]
-*.egg-info/
 .pytest_cache/
 .mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-dist/
-build/
-
-# Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-
-# Runtime data and private artifacts
 runtime/
-data/raw/
-data/private/
-data/evidence/
-logs/
+evidence/
 *.db
-*.sqlite
-*.sqlite3
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+*.jks
+*.keystore
 
-# Models are versioned deliberately; local experiments are not
-models/experimental/
-
-# Editors and OS
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
-Desktop.ini
