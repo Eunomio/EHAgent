@@ -63,6 +63,7 @@ Android 模拟器使用 `http://10.0.2.2:8000`。
 - [萤石 C6c 接入与调试](docs/DEVICE_INTEGRATION.md)
 - [基础模型、采集数据与上传方法](docs/MODEL_AND_DATA_GUIDE.md)
 - [后端接口说明](docs/API.md)
+- [比赛期完整PRD](docs/比赛期产品需求文档_PRD_v1.6.md)
 - [LLM模块PRD](docs/PRD_LLM_MODULE.md)
 
 ## 目录
