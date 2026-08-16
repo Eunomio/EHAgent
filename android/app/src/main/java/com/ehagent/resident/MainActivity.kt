@@ -196,6 +196,14 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                 VitalCard(Modifier.weight(1f), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
             }
             VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.DirectionsWalk, "夜间离床", sleep.bedExitCount?.toString() ?: "—", "次")
+            sleep.analysis?.let {
+                Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = BrandSoft)) {
+                    Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.AutoAwesome, null, tint = Brand); Spacer(Modifier.width(8.dp)); Text("昨晚小结", fontSize = 19.sp, fontWeight = FontWeight.Bold) }
+                        Text(it, fontSize = 17.sp, lineHeight = 26.sp)
+                    }
+                }
+            }
             Text("数据来自床边设备的无感测量。身体不舒服时，请及时联系家人或医生。", color = Muted, lineHeight = 24.sp)
         }
         SettingsSwitch("暂停睡眠提醒", "睡眠数据仍会保留", state.sleepPaused, vm::setSleepPaused)
@@ -207,6 +215,7 @@ private fun MePage(state: UiState, vm: MainViewModel) {
     var url by remember(vm.backendUrl) { mutableStateOf(vm.backendUrl) }
     var contactName by remember(state.dashboard.contactName) { mutableStateOf(state.dashboard.contactName) }
     var contactPhone by remember(state.dashboard.contactPhone) { mutableStateOf(state.dashboard.contactPhone) }
+    var feedback by remember { mutableStateOf("") }
     PageBody {
         PageTitle("我的", "管理家中设备和联系设置", Icons.Rounded.Person)
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -225,6 +234,14 @@ private fun MePage(state: UiState, vm: MainViewModel) {
                 OutlinedTextField(value = contactName, onValueChange = { contactName = it }, label = { Text("家人称呼") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = contactPhone, onValueChange = { contactPhone = it }, label = { Text("电话号码") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedButton(onClick = { vm.saveContact(contactName, contactPhone) }, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(15.dp)) { Text("保存联系方式", fontSize = 17.sp) }
+            }
+        }
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("说说您的感受", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("可以告诉我们哪里好用、哪里需要改进", color = Muted)
+                OutlinedTextField(value = feedback, onValueChange = { feedback = it }, placeholder = { Text("例如：睡眠小结看得很清楚") }, minLines = 3, maxLines = 5, modifier = Modifier.fillMaxWidth())
+                Button(onClick = { vm.sendFeedback(feedback) { feedback = "" } }, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(15.dp)) { Text("提交", fontSize = 17.sp) }
             }
         }
         Text("我的设备", fontSize = 21.sp, fontWeight = FontWeight.Bold)

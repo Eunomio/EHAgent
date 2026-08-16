@@ -1,10 +1,10 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.dependencies import SettingsDep, StoreDep
+from app.dependencies import LlmDep, SettingsDep, StoreDep
 
 router = APIRouter(prefix="/resident", tags=["resident"])
 
@@ -30,7 +30,12 @@ class SettingUpdate(BaseModel):
     evidence_retention_days: int | None = Field(default=None, ge=1, le=30)
 
 
-def settings_payload(store: StoreDep) -> dict:
+class FeedbackCreate(BaseModel):
+    topic: Literal["product", "safety", "sleep", "help", "other"] = "product"
+    message: str = Field(min_length=2, max_length=800)
+
+
+def settings_payload(store: StoreDep) -> dict[str, Any]:
     raw = store.settings()
     return {
         "camera_paused": raw.get("camera_paused") == "true",
@@ -41,7 +46,7 @@ def settings_payload(store: StoreDep) -> dict:
     }
 
 
-def sleep_alert(history: list[dict]) -> dict | None:
+def sleep_alert(history: list[dict[str, Any]]) -> dict[str, str] | None:
     if len(history) < 7:
         return None
     baseline = sorted(item["duration_minutes"] for item in history[:7])[3]
@@ -51,9 +56,10 @@ def sleep_alert(history: list[dict]) -> dict | None:
 
 
 @router.get("/dashboard")
-def dashboard(store: StoreDep, settings: SettingsDep) -> dict:
+def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
     preferences = settings_payload(store)
     sleep = store.latest_sleep()
+    sleep_analysis = store.latest_llm_output("sleep", sleep["id"]) if sleep else None
     task = store.latest_task()
     hour = datetime.now().hour
     greeting = "早上好" if hour < 11 else "下午好" if hour < 18 else "晚上好"
@@ -69,6 +75,7 @@ def dashboard(store: StoreDep, settings: SettingsDep) -> dict:
         "sleep": {
             "status": "ready" if sleep else "empty",
             "summary": sleep,
+            "analysis": sleep_analysis,
             "headline": (
                 f"睡了{sleep['duration_minutes'] // 60}小时{sleep['duration_minutes'] % 60}分钟"
                 if sleep
@@ -84,7 +91,7 @@ def dashboard(store: StoreDep, settings: SettingsDep) -> dict:
 
 
 @router.get("/safety")
-def safety(store: StoreDep, settings: SettingsDep) -> dict:
+def safety(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
     return {
         "area_name": settings.safety_area_name,
         "camera_paused": settings_payload(store)["camera_paused"],
@@ -94,7 +101,7 @@ def safety(store: StoreDep, settings: SettingsDep) -> dict:
 
 
 @router.post("/safety/tasks/{task_id}/actions")
-def act_on_task(task_id: str, payload: TaskAction, store: StoreDep) -> dict:
+def act_on_task(task_id: str, payload: TaskAction, store: StoreDep) -> dict[str, Any]:
     task = store.act_on_task(task_id, payload.action)
     if task is None:
         raise HTTPException(404, "没有找到这条安全提醒")
@@ -102,12 +109,14 @@ def act_on_task(task_id: str, payload: TaskAction, store: StoreDep) -> dict:
 
 
 @router.get("/sleep")
-def sleep(store: StoreDep, settings: SettingsDep) -> dict:
+def sleep(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
     history = store.sleep_history(14)
+    latest = history[0] if history else None
     return {
         "device_name": settings.sleep_device_name,
-        "latest": history[0] if history else None,
+        "latest": latest,
         "history": history,
+        "analysis": store.latest_llm_output("sleep", latest["id"]) if latest else None,
         "baseline_ready": len(history) >= 7,
         "alert": sleep_alert(history),
         "alerts_paused": settings_payload(store)["sleep_alerts_paused"],
@@ -115,7 +124,7 @@ def sleep(store: StoreDep, settings: SettingsDep) -> dict:
 
 
 @router.get("/help")
-def help_page(store: StoreDep) -> dict:
+def help_page(store: StoreDep) -> dict[str, Any]:
     preferences = settings_payload(store)
     return {
         "contact_name": preferences["contact_name"],
@@ -125,12 +134,30 @@ def help_page(store: StoreDep) -> dict:
 
 
 @router.post("/help")
-def create_help(payload: HelpCreate, store: StoreDep) -> dict:
+def create_help(payload: HelpCreate, store: StoreDep) -> dict[str, Any]:
     return store.create_help_request(payload.request_type, payload.message)
 
 
+@router.post("/feedback")
+async def create_feedback(
+    payload: FeedbackCreate, store: StoreDep, llm: LlmDep
+) -> dict[str, Any]:
+    digest, source = await llm.summarize_feedback(payload.topic, payload.message)
+    return store.create_feedback(
+        payload.topic, payload.message, digest.summary, digest.category,
+        digest.needs_follow_up, source,
+    )
+
+
+@router.get("/feedback")
+def list_feedback(store: StoreDep) -> dict[str, Any]:
+    return {"items": store.feedback()}
+
+
 @router.put("/help/{request_id}")
-def update_help(request_id: str, payload: HelpUpdate, store: StoreDep) -> dict:
+def update_help(
+    request_id: str, payload: HelpUpdate, store: StoreDep
+) -> dict[str, Any]:
     request = store.update_help(request_id, payload.status)
     if request is None:
         raise HTTPException(404, "没有找到这条联系请求")
@@ -138,12 +165,12 @@ def update_help(request_id: str, payload: HelpUpdate, store: StoreDep) -> dict:
 
 
 @router.get("/settings")
-def get_settings(store: StoreDep) -> dict:
+def get_settings(store: StoreDep) -> dict[str, Any]:
     return settings_payload(store)
 
 
 @router.put("/settings")
-def update_settings(payload: SettingUpdate, store: StoreDep) -> dict:
+def update_settings(payload: SettingUpdate, store: StoreDep) -> dict[str, Any]:
     raw = payload.model_dump(exclude_none=True)
     store.update_settings(
         {key: str(value).lower() if isinstance(value, bool) else str(value) for key, value in raw.items()}

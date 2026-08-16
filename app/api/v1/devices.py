@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 
 from app.dependencies import EzvizDep, SettingsDep, StoreDep
@@ -7,8 +9,10 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 
 @router.get("")
-async def device_status(ezviz: EzvizDep, settings: SettingsDep) -> dict:
-    c6c: dict = {"name": "萤石C6c", "configured": ezviz.configured, "online": None}
+async def device_status(ezviz: EzvizDep, settings: SettingsDep) -> dict[str, Any]:
+    c6c: dict[str, Any] = {
+        "name": "萤石C6c", "configured": ezviz.configured, "online": None
+    }
     if ezviz.configured:
         try:
             info = await ezviz.device_info()
@@ -26,7 +30,7 @@ async def device_status(ezviz: EzvizDep, settings: SettingsDep) -> dict:
 
 
 @router.post("/c6c/test")
-async def test_c6c(ezviz: EzvizDep) -> dict:
+async def test_c6c(ezviz: EzvizDep) -> dict[str, Any]:
     try:
         info = await ezviz.device_info()
         return {"success": True, "online": str(info.get("status")) == "1", "device": info}
@@ -35,7 +39,7 @@ async def test_c6c(ezviz: EzvizDep) -> dict:
 
 
 @router.post("/c6c/capture")
-async def capture_c6c(ezviz: EzvizDep, store: StoreDep) -> dict:
+async def capture_c6c(ezviz: EzvizDep, store: StoreDep) -> dict[str, Any]:
     if store.settings().get("camera_paused") == "true":
         raise HTTPException(409, "摄像头已暂停，请先恢复检查")
     try:

@@ -2,7 +2,7 @@
 
 面向独居和居家养老场景的 Android 产品框架。老人端提供通道安全、睡眠、心率、呼吸频率和联系家人功能；本地 FastAPI 服务负责连接萤石设备、保存数据和接收视觉模型结果。
 
-当前版本为 `0.3.0`，旧版网页界面已经移除。页面不会自动生成健康数据，未连接设备时会明确显示“等待连接”或“暂未同步”。
+当前版本为 `0.4.0`，旧版网页界面已经移除。页面不会自动生成健康数据，未连接设备时会明确显示“等待连接”或“暂未同步”。
 
 ## 已完成
 
@@ -13,9 +13,22 @@
 - 无感睡眠助手数据接收接口
 - 通道障碍物判断结果、老人处理动作和家人协助请求
 - 训练图片与标注上传接口
+- LLM生成通道整改建议、睡眠小结和老人反馈摘要，未配置时自动使用模板
 - GitHub Actions 自动构建可安装 APK
 
 萤石 AppKey、AppSecret 和设备验证码只写在家中电脑的 `.env`。APK 只保存本地服务地址，无需 Engineering API key。
+
+LLM API Key同样只写在Windows后端`.env`。启用OpenAI Responses API示例：
+
+```dotenv
+EH_LLM_ENABLED=true
+EH_LLM_PROVIDER=openai
+EH_LLM_API_KEY=你的APIKey
+EH_LLM_MODEL=gpt-5.4-nano
+EH_LLM_API_BASE=https://api.openai.com/v1
+```
+
+重启后端后，在`http://127.0.0.1:8000/docs`调用`POST /api/v1/llm/test`。返回`source: llm`表示连接成功；返回`source: template`时，产品仍会使用固定模板完成流程。
 
 ## 快速使用
 
@@ -50,6 +63,7 @@ Android 模拟器使用 `http://10.0.2.2:8000`。
 - [萤石 C6c 接入与调试](docs/DEVICE_INTEGRATION.md)
 - [基础模型、采集数据与上传方法](docs/MODEL_AND_DATA_GUIDE.md)
 - [后端接口说明](docs/API.md)
+- [LLM模块PRD](docs/PRD_LLM_MODULE.md)
 
 ## 目录
 
@@ -61,4 +75,3 @@ tests/         后端自动化测试
 docs/          设备、模型和接口文档
 models/        模型交付约定
 ```
-

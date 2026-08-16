@@ -52,6 +52,19 @@ class ProductStore:
                     id TEXT PRIMARY KEY, file_path TEXT NOT NULL, annotation_json TEXT NOT NULL,
                     source TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS llm_output (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, entity_id TEXT NOT NULL,
+                    content_json TEXT NOT NULL, source TEXT NOT NULL, model TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_llm_output_entity
+                    ON llm_output(kind, entity_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS resident_feedback (
+                    id TEXT PRIMARY KEY, topic TEXT NOT NULL, message TEXT NOT NULL,
+                    summary TEXT NOT NULL, category TEXT NOT NULL,
+                    needs_follow_up INTEGER NOT NULL, source TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             defaults = {
@@ -112,8 +125,9 @@ class ProductStore:
         if existing and existing["title"] == title and existing["location"] == location:
             with self._connect() as db:
                 db.execute(
-                    "UPDATE safety_task SET updated_at=?,evidence_url=COALESCE(?,evidence_url) WHERE id=?",
-                    (timestamp, evidence_url, existing["id"]),
+                    "UPDATE safety_task SET explanation=?,suggestion=?,updated_at=?,"
+                    "evidence_url=COALESCE(?,evidence_url) WHERE id=?",
+                    (explanation, suggestion, timestamp, evidence_url, existing["id"]),
                 )
             return self.latest_task() or existing
         record = {
@@ -217,3 +231,75 @@ class ProductStore:
                 (sample_id, path, json.dumps(annotation, ensure_ascii=False), source, now_iso()),
             )
         return sample_id
+
+    def add_llm_output(
+        self, kind: str, entity_id: str, content: dict[str, Any], source: str, model: str
+    ) -> dict[str, Any]:
+        record = {
+            "id": str(uuid4()), "kind": kind, "entity_id": entity_id,
+            "content_json": json.dumps(content, ensure_ascii=False),
+            "source": source, "model": model, "created_at": now_iso(),
+        }
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO llm_output VALUES "
+                "(:id,:kind,:entity_id,:content_json,:source,:model,:created_at)",
+                record,
+            )
+        return {**record, "content": content}
+
+    def latest_llm_output(self, kind: str, entity_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM llm_output WHERE kind=? AND entity_id=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (kind, entity_id),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["content"] = json.loads(result.pop("content_json"))
+        return result
+
+    def llm_stats(self) -> dict[str, Any]:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT source, COUNT(*) AS total FROM llm_output GROUP BY source"
+            ).fetchall()
+            latest = db.execute(
+                "SELECT source,model,created_at FROM llm_output ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        counts = {row["source"]: row["total"] for row in rows}
+        return {
+            "total": sum(counts.values()),
+            "llm": counts.get("llm", 0),
+            "template": counts.get("template", 0),
+            "latest": dict(latest) if latest else None,
+        }
+
+    def create_feedback(
+        self, topic: str, message: str, summary: str, category: str,
+        needs_follow_up: bool, source: str,
+    ) -> dict[str, Any]:
+        record = {
+            "id": str(uuid4()), "topic": topic, "message": message,
+            "summary": summary, "category": category,
+            "needs_follow_up": int(needs_follow_up), "source": source,
+            "created_at": now_iso(),
+        }
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO resident_feedback VALUES "
+                "(:id,:topic,:message,:summary,:category,:needs_follow_up,:source,:created_at)",
+                record,
+            )
+        return {**record, "needs_follow_up": needs_follow_up}
+
+    def feedback(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM resident_feedback ORDER BY created_at DESC LIMIT ?", (limit,)
+            )]
+        for row in rows:
+            row["needs_follow_up"] = bool(row["needs_follow_up"])
+        return rows

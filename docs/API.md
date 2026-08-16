@@ -17,6 +17,10 @@
 | 接收睡眠摘要 | `POST /api/v1/ingest/sleep-summaries` |
 | 接收模型判断 | `POST /api/v1/ingest/safety-results` |
 | 上传训练图片 | `POST /api/v1/ingest/vision-samples` |
+| 提交老人反馈 | `POST /api/v1/resident/feedback` |
+| 查看老人反馈摘要 | `GET /api/v1/resident/feedback` |
+| 查看LLM配置状态 | `GET /api/v1/llm/status` |
+| 测试LLM连接与结构化输出 | `POST /api/v1/llm/test` |
 
 模型结果示例：
 
@@ -34,3 +38,6 @@
 
 `result` 可为 `clear`、`obstacle` 或 `insufficient`。画面遮挡、过暗或无法判断时发送 `insufficient`，产品只记录检查，不提醒老人整理。
 
+当`result`为`obstacle`时，Windows Agent调用LLM生成`title`、`explanation`和`suggestion`。LLM不能修改`result`。未配置Key、超时或返回格式错误时，返回内容中的`language.source`为`template`。
+
+睡眠数据写入后会生成`analysis.content.summary`；老人反馈同时保留`message`原文和`summary`摘要。

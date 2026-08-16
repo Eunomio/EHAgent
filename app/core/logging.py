@@ -9,6 +9,7 @@ import structlog
 
 SENSITIVE_KEYS = {
     "access_token",
+    "api_key",
     "app_secret",
     "authorization",
     "device_verify_code",
@@ -25,7 +26,11 @@ def _redact_sensitive_values(
 
     for key in list(event_dict):
         normalized = re.sub(r"[^a-z0-9]", "_", key.lower())
-        if normalized in SENSITIVE_KEYS or normalized.endswith("_secret"):
+        if (
+            normalized in SENSITIVE_KEYS
+            or normalized.endswith("_api_key")
+            or normalized.endswith("_secret")
+        ):
             event_dict[key] = "[REDACTED]"
     return event_dict
 

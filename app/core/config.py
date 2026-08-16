@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     sleep_provider: str = "disabled"
     sleep_device_name: str = "萤石无感睡眠伴侣"
     safety_area_name: str = "卧室外走道"
+    llm_enabled: bool = False
+    llm_provider: str = "openai"
+    llm_api_key: str = ""
+    llm_model: str = "gpt-5.4-nano"
+    llm_api_base: str = "https://api.openai.com/v1"
+    llm_timeout_seconds: float = Field(default=15, ge=1, le=60)
+    llm_max_output_tokens: int = Field(default=500, ge=100, le=2000)
 
 
 @lru_cache(maxsize=1)

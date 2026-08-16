@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app.dependencies import SettingsDep, StoreDep
+from app.dependencies import LlmDep, SettingsDep, StoreDep
 
 router = APIRouter(prefix="/ingest", tags=["data ingest"])
 
@@ -47,12 +47,21 @@ class SafetyResultIn(BaseModel):
 
 
 @router.post("/sleep-summaries")
-def ingest_sleep(payload: SleepSummaryIn, store: StoreDep) -> dict:
-    return store.add_sleep(payload.model_dump(mode="json"))
+async def ingest_sleep(
+    payload: SleepSummaryIn, store: StoreDep, llm: LlmDep
+) -> dict[str, Any]:
+    record = store.add_sleep(payload.model_dump(mode="json"))
+    copy, source = await llm.analyze_sleep(record, store.sleep_history(7))
+    analysis = store.add_llm_output(
+        "sleep", record["id"], copy.model_dump(), source, llm.model_name
+    )
+    return {**record, "analysis": analysis}
 
 
 @router.post("/safety-results")
-def ingest_safety(payload: SafetyResultIn, store: StoreDep) -> dict:
+async def ingest_safety(
+    payload: SafetyResultIn, store: StoreDep, llm: LlmDep
+) -> dict[str, Any]:
     check = store.add_safety_check(payload.result, payload.source, payload.detail, payload.evidence_url)
     if payload.result == "clear":
         store.resolve_pending_task()
@@ -60,13 +69,19 @@ def ingest_safety(payload: SafetyResultIn, store: StoreDep) -> dict:
     if payload.result == "insufficient":
         return {"check": check, "task": None}
     object_name = payload.object_name or "物品"
+    copy, language_source = await llm.explain_safety(
+        payload.location, object_name, payload.detail
+    )
     task = store.create_safety_task(
-        title=f"走道中有{object_name}", location=payload.location,
-        explanation=payload.detail,
-        suggestion=payload.suggestion or f"建议将{object_name}移到走道外。",
+        title=copy.title, location=payload.location,
+        explanation=copy.explanation,
+        suggestion=payload.suggestion or copy.suggestion,
         source=payload.source, evidence_url=payload.evidence_url,
     )
-    return {"check": check, "task": task}
+    language = store.add_llm_output(
+        "safety", task["id"], copy.model_dump(), language_source, llm.model_name
+    )
+    return {"check": check, "task": task, "language": language}
 
 
 @router.post("/vision-samples")

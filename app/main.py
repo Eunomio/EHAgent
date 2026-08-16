@@ -12,6 +12,7 @@ from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.devices.ezviz import EzvizClient
+from app.llm.service import LlmService
 from app.store import ProductStore
 
 
@@ -24,11 +25,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = ProductStore(database_path)
     store.initialize()
     ezviz = EzvizClient(resolved)
+    llm = LlmService(resolved)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
         await ezviz.close()
+        await llm.close()
 
     app = FastAPI(
         title=resolved.app_name,
@@ -39,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.store = store
     app.state.ezviz = ezviz
+    app.state.llm = llm
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

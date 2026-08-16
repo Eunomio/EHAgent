@@ -26,6 +26,9 @@ def test_sleep_summary_keeps_vitals(client: TestClient) -> None:
     latest = client.get("/api/v1/resident/sleep").json()["latest"]
     assert latest["heart_rate"] == 62
     assert latest["respiratory_rate"] == 16.2
+    analysis = client.get("/api/v1/resident/sleep").json()["analysis"]
+    assert analysis["source"] == "template"
+    assert "62" in analysis["content"]["summary"]
 
 
 def test_safety_task_and_action(client: TestClient) -> None:
@@ -36,6 +39,7 @@ def test_safety_task_and_action(client: TestClient) -> None:
     assert result.status_code == 200
     task = result.json()["task"]
     assert task["title"] == "走道中有纸箱"
+    assert result.json()["language"]["source"] == "template"
     action = client.post(f"/api/v1/resident/safety/tasks/{task['id']}/actions", json={"action": "need_help"})
     assert action.status_code == 200
     assert client.get("/api/v1/resident/help").json()["requests"][0]["request_type"] == "safety"
@@ -47,3 +51,20 @@ def test_settings_expose_only_product_options(client: TestClient) -> None:
         "camera_paused", "sleep_alerts_paused", "contact_name", "contact_phone",
         "evidence_retention_days",
     }
+
+
+def test_resident_feedback_keeps_original_and_digest(client: TestClient) -> None:
+    response = client.post("/api/v1/resident/feedback", json={
+        "topic": "product", "message": "睡眠页面很清楚，希望字体还能再大一点。",
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body["message"] == "睡眠页面很清楚，希望字体还能再大一点。"
+    assert body["summary"] == body["message"]
+    assert body["source"] == "template"
+
+
+def test_llm_status_does_not_expose_key(client: TestClient) -> None:
+    body = client.get("/api/v1/llm/status").json()
+    assert body["configured"] is False
+    assert "api_key" not in body

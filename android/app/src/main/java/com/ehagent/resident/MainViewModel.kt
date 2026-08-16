@@ -75,4 +75,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess { _state.value = _state.value.copy(notice = "家人联系方式已保存", error = null); refresh() }
             .onFailure { _state.value = _state.value.copy(error = it.message) }
     }
+
+    fun sendFeedback(message: String, onSent: () -> Unit) = viewModelScope.launch {
+        if (message.trim().length < 2) {
+            _state.value = _state.value.copy(error = "请写下您的感受")
+            return@launch
+        }
+        runCatching { ProductApi(backendUrl).sendFeedback("product", message.trim()) }
+            .onSuccess {
+                _state.value = _state.value.copy(notice = "谢谢，您的感受已保存", error = null)
+                onSent()
+            }
+            .onFailure { _state.value = _state.value.copy(error = it.message) }
+    }
 }
