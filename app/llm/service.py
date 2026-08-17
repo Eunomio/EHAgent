@@ -280,7 +280,9 @@ class LlmService:
     def _sleep_fields(item: dict[str, Any]) -> dict[str, Any]:
         keys = (
             "sleep_start", "sleep_end", "duration_minutes", "respiratory_rate",
-            "heart_rate", "bed_exit_count", "quality", "measured_at",
+            "heart_rate", "bed_exit_count", "quality", "sleep_score",
+            "awake_minutes", "light_sleep_minutes", "deep_sleep_minutes",
+            "rem_sleep_minutes", "data_status", "measured_at",
         )
         return {key: item.get(key) for key in keys}
 

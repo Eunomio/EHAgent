@@ -28,7 +28,9 @@ class ResidentContextBuilder:
                 key: sleep.get(key)
                 for key in (
                     "sleep_start", "sleep_end", "duration_minutes", "respiratory_rate",
-                    "heart_rate", "bed_exit_count", "quality", "measured_at",
+                    "heart_rate", "bed_exit_count", "quality", "sleep_score",
+                    "awake_minutes", "light_sleep_minutes", "deep_sleep_minutes",
+                    "rem_sleep_minutes", "measured_at",
                 )
             }
             used.append("最近一次睡眠摘要")
@@ -47,7 +49,13 @@ class ResidentContextBuilder:
             "sleep_alerts_paused": settings.get("sleep_alerts_paused") == "true",
             "contact_name": settings.get("contact_name") or "家人",
             "camera_configured": bool(self.settings.ezviz_device_serial),
-            "sleep_device_configured": self.settings.sleep_provider != "disabled",
+            "sleep_device_configured": (
+                self.settings.sleep_provider == "authorized_export"
+                or (
+                    self.settings.sleep_provider in {"webhook", "ezviz_webhook"}
+                    and bool(self.settings.sleep_device_serial)
+                )
+            ),
         }
         used.append("设备与提醒状态")
         return context, used

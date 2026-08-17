@@ -2,14 +2,16 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app.dependencies import EzvizDep, SettingsDep, StoreDep
+from app.dependencies import EzvizDep, SettingsDep, SleepDep, StoreDep
 from app.devices.ezviz import EzvizError
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
 
 @router.get("")
-async def device_status(ezviz: EzvizDep, settings: SettingsDep) -> dict[str, Any]:
+async def device_status(
+    ezviz: EzvizDep, settings: SettingsDep, sleep: SleepDep
+) -> dict[str, Any]:
     c6c: dict[str, Any] = {
         "name": "萤石C6c", "configured": ezviz.configured, "online": None
     }
@@ -21,11 +23,7 @@ async def device_status(ezviz: EzvizDep, settings: SettingsDep) -> dict[str, Any
             c6c["error"] = str(exc)
     return {
         "c6c": c6c,
-        "sleep_assistant": {
-            "name": settings.sleep_device_name,
-            "configured": settings.sleep_provider != "disabled",
-            "connection": settings.sleep_provider,
-        },
+        "sleep_assistant": sleep.status(),
     }
 
 

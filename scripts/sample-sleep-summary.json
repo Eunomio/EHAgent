@@ -1,7 +1,16 @@
 {
+  "external_report_id": "replace-with-real-report-id",
+  "device_serial": "replace-with-sleep-device-serial",
+  "report_date": "2026-08-13",
+  "timezone": "Asia/Shanghai",
   "sleep_start": "2026-08-12T22:41:00+08:00",
   "sleep_end": "2026-08-13T06:32:00+08:00",
   "duration_minutes": 471,
+  "awake_minutes": 34,
+  "light_sleep_minutes": 246,
+  "deep_sleep_minutes": 121,
+  "rem_sleep_minutes": 70,
+  "sleep_score": 82,
   "respiratory_rate": 16.2,
   "respiratory_min": 13.0,
   "respiratory_max": 20.0,
@@ -10,8 +19,9 @@
   "heart_rate_max": 79.0,
   "bed_exit_count": 1,
   "quality": "good",
+  "data_status": "final",
   "source": "ezviz_sleep_assistant",
   "measured_at": "2026-08-13T06:35:00+08:00",
-  "samples": []
+  "samples": [],
+  "stages": []
 }
-

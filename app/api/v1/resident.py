@@ -9,6 +9,13 @@ from app.dependencies import LlmDep, SettingsDep, StoreDep
 router = APIRouter(prefix="/resident", tags=["resident"])
 
 
+def resident_sleep(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    hidden = {"device_serial", "external_report_id"}
+    return {key: value for key, value in record.items() if key not in hidden}
+
+
 class TaskAction(BaseModel):
     action: Literal["done", "later", "need_help", "not_risk", "pause"]
 
@@ -74,7 +81,7 @@ def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
         },
         "sleep": {
             "status": "ready" if sleep else "empty",
-            "summary": sleep,
+            "summary": resident_sleep(sleep),
             "analysis": sleep_analysis,
             "headline": (
                 f"睡了{sleep['duration_minutes'] // 60}小时{sleep['duration_minutes'] % 60}分钟"
@@ -114,8 +121,8 @@ def sleep(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
     latest = history[0] if history else None
     return {
         "device_name": settings.sleep_device_name,
-        "latest": latest,
-        "history": history,
+        "latest": resident_sleep(latest),
+        "history": [resident_sleep(item) for item in history],
         "analysis": store.latest_llm_output("sleep", latest["id"]) if latest else None,
         "baseline_ready": len(history) >= 7,
         "alert": sleep_alert(history),

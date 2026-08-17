@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     ezviz_verify_code: str = ""
     sleep_provider: str = "disabled"
     sleep_device_name: str = "萤石无感睡眠伴侣"
+    sleep_device_serial: str = ""
+    sleep_webhook_token: str = ""
     safety_area_name: str = "卧室外走道"
     llm_enabled: bool = False
     llm_provider: str = "openai"

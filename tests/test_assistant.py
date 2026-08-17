@@ -1,5 +1,7 @@
 def test_assistant_uses_sleep_context_and_keeps_conversation(client) -> None:
     sleep = {
+        "external_report_id": "assistant-sleep-20260817",
+        "device_serial": "SLEEP001",
         "sleep_start": "2026-08-16T22:30:00+08:00",
         "sleep_end": "2026-08-17T05:50:00+08:00",
         "duration_minutes": 440,
@@ -10,7 +12,7 @@ def test_assistant_uses_sleep_context_and_keeps_conversation(client) -> None:
         "source": "ezviz_sleep_assistant",
         "measured_at": "2026-08-17T06:00:00+08:00",
     }
-    assert client.post("/api/v1/ingest/sleep-summaries", json=sleep).status_code == 200
+    assert client.post("/api/v1/ingest/sleep-reports", json=sleep).status_code == 200
 
     response = client.post(
         "/api/v1/assistant/chat", json={"message": "昨晚睡得怎么样？"}

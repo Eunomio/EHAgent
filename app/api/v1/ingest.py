@@ -1,39 +1,17 @@
 import json
-from datetime import datetime
+import secrets
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app.dependencies import LlmDep, SettingsDep, StoreDep
+from app.dependencies import LlmDep, SettingsDep, SleepDep, StoreDep
+from app.sleep.models import SleepReportIn
+from app.sleep.service import SleepDeviceMismatch
 
 router = APIRouter(prefix="/ingest", tags=["data ingest"])
-
-
-class VitalSample(BaseModel):
-    at: datetime
-    respiratory_rate: float | None = Field(default=None, ge=1, le=80)
-    heart_rate: float | None = Field(default=None, ge=20, le=240)
-
-
-class SleepSummaryIn(BaseModel):
-    id: str | None = None
-    sleep_start: datetime
-    sleep_end: datetime
-    duration_minutes: int = Field(ge=1, le=1440)
-    respiratory_rate: float | None = Field(default=None, ge=1, le=80)
-    heart_rate: float | None = Field(default=None, ge=20, le=240)
-    respiratory_min: float | None = None
-    respiratory_max: float | None = None
-    heart_rate_min: float | None = None
-    heart_rate_max: float | None = None
-    bed_exit_count: int | None = Field(default=None, ge=0, le=100)
-    quality: Literal["good", "usable", "insufficient"] = "usable"
-    source: Literal["ezviz_sleep_assistant", "authorized_export", "research_import"]
-    measured_at: datetime
-    samples: list[VitalSample] = Field(default_factory=list)
 
 
 class SafetyResultIn(BaseModel):
@@ -46,16 +24,43 @@ class SafetyResultIn(BaseModel):
     evidence_url: str | None = None
 
 
-@router.post("/sleep-summaries")
-async def ingest_sleep(
-    payload: SleepSummaryIn, store: StoreDep, llm: LlmDep
+def authorize_sleep_report(settings: SettingsDep, token: str | None) -> None:
+    expected = settings.sleep_webhook_token
+    if expected and (token is None or not secrets.compare_digest(token, expected)):
+        raise HTTPException(401, "睡眠数据接收凭证不正确")
+
+
+async def save_sleep_report(
+    payload: SleepReportIn,
+    sleep: SleepDep,
+    settings: SettingsDep,
+    token: str | None,
 ) -> dict[str, Any]:
-    record = store.add_sleep(payload.model_dump(mode="json"))
-    copy, source = await llm.analyze_sleep(record, store.sleep_history(7))
-    analysis = store.add_llm_output(
-        "sleep", record["id"], copy.model_dump(), source, llm.model_name
-    )
-    return {**record, "analysis": analysis}
+    authorize_sleep_report(settings, token)
+    try:
+        return await sleep.ingest(payload)
+    except SleepDeviceMismatch as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/sleep-reports")
+async def ingest_sleep(
+    payload: SleepReportIn,
+    sleep: SleepDep,
+    settings: SettingsDep,
+    x_eh_sleep_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    return await save_sleep_report(payload, sleep, settings, x_eh_sleep_token)
+
+
+@router.post("/sleep-summaries", deprecated=True)
+async def ingest_sleep_summary(
+    payload: SleepReportIn,
+    sleep: SleepDep,
+    settings: SettingsDep,
+    x_eh_sleep_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    return await save_sleep_report(payload, sleep, settings, x_eh_sleep_token)
 
 
 @router.post("/safety-results")

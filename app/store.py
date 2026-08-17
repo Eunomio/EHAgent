@@ -41,7 +41,12 @@ class ProductStore:
                     heart_rate REAL, respiratory_min REAL, respiratory_max REAL,
                     heart_rate_min REAL, heart_rate_max REAL, bed_exit_count INTEGER,
                     quality TEXT NOT NULL, source TEXT NOT NULL, measured_at TEXT NOT NULL,
-                    samples_json TEXT NOT NULL DEFAULT '[]'
+                    samples_json TEXT NOT NULL DEFAULT '[]', external_report_id TEXT,
+                    device_serial TEXT, report_date TEXT, timezone TEXT,
+                    awake_minutes INTEGER, light_sleep_minutes INTEGER,
+                    deep_sleep_minutes INTEGER, rem_sleep_minutes INTEGER,
+                    sleep_score REAL, data_status TEXT NOT NULL DEFAULT 'final',
+                    stages_json TEXT NOT NULL DEFAULT '[]', received_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS help_request (
                     id TEXT PRIMARY KEY, request_type TEXT NOT NULL, message TEXT NOT NULL,
@@ -88,6 +93,12 @@ class ProductStore:
                 );
                 """
             )
+            self._migrate_sleep_summary(db)
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_sleep_report_source "
+                "ON sleep_summary(device_serial, external_report_id) "
+                "WHERE device_serial IS NOT NULL AND external_report_id IS NOT NULL"
+            )
             defaults = {
                 "camera_paused": "false", "sleep_alerts_paused": "false",
                 "contact_name": "家人", "contact_phone": "",
@@ -96,6 +107,29 @@ class ProductStore:
             db.executemany(
                 "INSERT OR IGNORE INTO app_setting(key,value) VALUES (?,?)", defaults.items()
             )
+
+    @staticmethod
+    def _migrate_sleep_summary(db: sqlite3.Connection) -> None:
+        existing = {
+            row["name"] for row in db.execute("PRAGMA table_info(sleep_summary)")
+        }
+        columns = {
+            "external_report_id": "TEXT",
+            "device_serial": "TEXT",
+            "report_date": "TEXT",
+            "timezone": "TEXT",
+            "awake_minutes": "INTEGER",
+            "light_sleep_minutes": "INTEGER",
+            "deep_sleep_minutes": "INTEGER",
+            "rem_sleep_minutes": "INTEGER",
+            "sleep_score": "REAL",
+            "data_status": "TEXT NOT NULL DEFAULT 'final'",
+            "stages_json": "TEXT NOT NULL DEFAULT '[]'",
+            "received_at": "TEXT",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                db.execute(f"ALTER TABLE sleep_summary ADD COLUMN {name} {definition}")
 
     def settings(self) -> dict[str, str]:
         with self._connect() as db:
@@ -187,21 +221,38 @@ class ProductStore:
             )
 
     def add_sleep(self, payload: dict[str, Any]) -> dict[str, Any]:
-        record = {**payload, "id": payload.get("id") or str(uuid4())}
-        record["samples_json"] = json.dumps(payload.get("samples", []), ensure_ascii=False)
-        keys = [
-            "id", "sleep_start", "sleep_end", "duration_minutes", "respiratory_rate",
-            "heart_rate", "respiratory_min", "respiratory_max", "heart_rate_min",
-            "heart_rate_max", "bed_exit_count", "quality", "source", "measured_at",
-            "samples_json",
-        ]
-        values = {key: record.get(key) for key in keys}
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing_id = None
+            if payload.get("device_serial") and payload.get("external_report_id"):
+                row = db.execute(
+                    "SELECT id FROM sleep_summary WHERE device_serial=? AND external_report_id=?",
+                    (payload["device_serial"], payload["external_report_id"]),
+                ).fetchone()
+                existing_id = row["id"] if row else None
+            record = {**payload, "id": existing_id or payload.get("id") or str(uuid4())}
+            record["samples_json"] = json.dumps(payload.get("samples", []), ensure_ascii=False)
+            record["stages_json"] = json.dumps(payload.get("stages", []), ensure_ascii=False)
+            record["received_at"] = now_iso()
+            keys = [
+                "id", "external_report_id", "device_serial", "report_date", "timezone",
+                "sleep_start", "sleep_end", "duration_minutes", "awake_minutes",
+                "light_sleep_minutes", "deep_sleep_minutes", "rem_sleep_minutes",
+                "sleep_score", "respiratory_rate", "heart_rate", "respiratory_min",
+                "respiratory_max", "heart_rate_min", "heart_rate_max", "bed_exit_count",
+                "quality", "data_status", "source", "measured_at", "samples_json",
+                "stages_json", "received_at",
+            ]
+            values = {key: record.get(key) for key in keys}
             db.execute(
-                f"INSERT OR REPLACE INTO sleep_summary({','.join(keys)}) "
-                f"VALUES ({','.join(':'+key for key in keys)})", values,
+                f"INSERT INTO sleep_summary({','.join(keys)}) "
+                f"VALUES ({','.join(':'+key for key in keys)}) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                + ",".join(f"{key}=excluded.{key}" for key in keys if key != "id"),
+                values,
             )
-        return self.latest_sleep() or record
+            row = db.execute("SELECT * FROM sleep_summary WHERE id=?", (record["id"],)).fetchone()
+        return self._decode_sleep(dict(row)) if row else record
 
     def latest_sleep(self) -> dict[str, Any] | None:
         rows = self.sleep_history(1)
@@ -212,9 +263,14 @@ class ProductStore:
             rows = [dict(r) for r in db.execute(
                 "SELECT * FROM sleep_summary ORDER BY sleep_end DESC LIMIT ?", (limit,)
             )]
-        for row in rows:
-            row["samples"] = json.loads(row.pop("samples_json", "[]"))
-        return rows
+        return [self._decode_sleep(row) for row in rows]
+
+    @staticmethod
+    def _decode_sleep(record: dict[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        result["samples"] = json.loads(result.pop("samples_json", "[]"))
+        result["stages"] = json.loads(result.pop("stages_json", "[]"))
+        return result
 
     def create_help_request(self, request_type: str, message: str) -> dict[str, Any]:
         timestamp = now_iso()

@@ -14,6 +14,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.devices.ezviz import EzvizClient
 from app.llm.service import LlmService
+from app.sleep.service import SleepService
 from app.store import ProductStore
 
 
@@ -28,6 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ezviz = EzvizClient(resolved)
     llm = LlmService(resolved)
     assistant = AssistantService(store, llm, resolved)
+    sleep = SleepService(store, llm, resolved)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -46,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ezviz = ezviz
     app.state.llm = llm
     app.state.assistant = assistant
+    app.state.sleep = sleep
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

@@ -46,18 +46,35 @@ Android工程使用官方Maven依赖`io.github.ezviz-open:ezviz-sdk:5.30.2`。�
 
 ## 无感睡眠助手
 
-萤石公开产品资料确认设备可采集睡眠状态、心率、呼吸频率和离床信息。具体数据接口权限随开放平台应用和项目授权变化，因此后端提供统一接收口：
+萤石公开产品资料确认设备可采集睡眠状态、心率、呼吸频率和离床信息。睡眠数据接口权限随开放平台应用和项目授权变化，Windows Agent通过独立设备序列号绑定一台无感睡眠助手，并提供正式报告接收口：
 
 ```text
-POST /api/v1/ingest/sleep-summaries
+POST /api/v1/ingest/sleep-reports
 ```
 
 接入顺序：
 
-1. 向萤石项目联系人申请睡眠数据授权，确认回调或导出的字段、频率与时间单位。
-2. 将萤石字段映射为本项目的睡眠摘要格式。
-3. 每晚睡眠结束后发送一次摘要；若可取得时序数据，把采样点放入 `samples`。
-4. `.env` 设置 `EH_SLEEP_PROVIDER=webhook`，重启服务，手机首页即显示真实记录。
+1. 在设备机身标签、包装或萤石账号设备列表中找到睡眠助手的设备序列号。
+2. 向萤石项目联系人申请睡眠数据授权，确认回调字段、报告编号、时间单位和推送重试规则。
+3. 将开放接口字段映射为本项目的睡眠报告格式；每份报告必须带`device_serial`。
+4. `.env`填写：
+
+```dotenv
+EH_SLEEP_PROVIDER=ezviz_webhook
+EH_SLEEP_DEVICE_NAME=萤石无感睡眠助手
+EH_SLEEP_DEVICE_SERIAL=设备机身上的序列号
+EH_SLEEP_WEBHOOK_TOKEN=自行生成的随机长字符串
+```
+
+5. 推送程序调用接口时增加请求头：
+
+```text
+X-EH-Sleep-Token: 与EH_SLEEP_WEBHOOK_TOKEN相同的内容
+```
+
+6. 重启服务。`GET /api/v1/devices`中睡眠设备的`configured`应为`true`。
+
+报告包含设备序列号、平台报告编号、报告日期、时区、睡眠起止时间、总睡眠时长、睡眠构成、得分、心率、呼吸频率、离床次数、数据质量、报告状态和生成时间。接口提供时序采样时放入`samples`，提供睡眠阶段区间时放入`stages`。同一设备的同一平台报告编号再次推送时更新原记录。
 
 正式授权前，可以使用设备官方导出的真实记录联调：
 
@@ -65,7 +82,13 @@ POST /api/v1/ingest/sleep-summaries
 .\scripts\send-sleep-summary.ps1 -Backend http://127.0.0.1:8000
 ```
 
-请先把脚本中的示例值替换为设备实际导出值。公开能力参考：[萤石无感睡眠监测资料](https://icnopen.ezviz.com/cn/s/244)、[萤石睡眠产品介绍](https://www.ezviz.com/cn/news/6412.html?_cc=1)。
+请先把脚本中的示例设备序列号、报告编号和数值替换为设备实际数据。如果配置了接收凭证，运行：
+
+```powershell
+.\scripts\send-sleep-summary.ps1 -Backend http://127.0.0.1:8000 -Token "你的接收凭证"
+```
+
+当前公开文档没有给出通用睡眠报告REST路径。取得比赛账号的获批接口文档后，在萤石回调或同步程序中完成一次字段映射即可，住户页面、数据库和分析模块无需再调整。公开能力参考：[萤石无感睡眠监测资料](https://icnopen.ezviz.com/cn/s/244)、[萤石睡眠产品介绍](https://www.ezviz.com/cn/news/6412.html?_cc=1)。
 
 ## 手机无法连接时
 

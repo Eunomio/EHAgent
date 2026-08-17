@@ -145,7 +145,15 @@ private fun HomePage(state: UiState, vm: MainViewModel, onSafety: () -> Unit, on
         ContactCard(state.dashboard.contactName) { dial(context, state.dashboard.contactPhone) }
         Text("设备状态", fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
         DeviceRow(Icons.Rounded.Videocam, "通道摄像头", deviceText(state.devices.cameraConfigured, state.devices.cameraOnline))
-        DeviceRow(Icons.Rounded.Bed, "无感睡眠助手", if (state.devices.sleepConfigured) "已连接" else "等待连接")
+        DeviceRow(
+            Icons.Rounded.Bed,
+            "无感睡眠助手",
+            when {
+                !state.devices.sleepConfigured -> "等待连接"
+                state.devices.sleepLastReportAt != null -> "已同步"
+                else -> "已连接"
+            },
+        )
     }
 }
 
@@ -354,6 +362,16 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("昨晚共睡眠", color = Color.White.copy(.75f), fontSize = 17.sp)
                     Text("${sleep.duration / 60} 小时 ${sleep.duration % 60} 分钟", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                    if (sleep.sleepStart != null && sleep.sleepEnd != null) {
+                        Text(
+                            "${clockText(sleep.sleepStart)} 入睡 · ${clockText(sleep.sleepEnd)} 起床",
+                            color = Color.White.copy(.82f),
+                            fontSize = 16.sp,
+                        )
+                    }
+                    sleep.sleepScore?.let {
+                        Text("睡眠得分 ${formatOne(it)}", color = Color.White, fontSize = 18.sp)
+                    }
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -361,6 +379,7 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                 VitalCard(Modifier.weight(1f), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
             }
             VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.DirectionsWalk, "夜间离床", sleep.bedExitCount?.toString() ?: "—", "次")
+            SleepStagesCard(sleep)
             sleep.analysis?.let {
                 Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = BrandSoft)) {
                     Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -372,6 +391,28 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
             Text("数据来自床边设备的无感测量。身体不舒服时，请及时联系家人或医生。", color = Muted, lineHeight = 24.sp)
         }
         SettingsSwitch("暂停睡眠提醒", "睡眠数据仍会保留", state.sleepPaused, vm::setSleepPaused)
+    }
+}
+
+@Composable
+private fun SleepStagesCard(sleep: SleepCard) {
+    val stages = listOfNotNull(
+        sleep.awakeMinutes?.let { "清醒" to it },
+        sleep.lightSleepMinutes?.let { "浅睡" to it },
+        sleep.deepSleepMinutes?.let { "深睡" to it },
+        sleep.remSleepMinutes?.let { "快速眼动" to it },
+    )
+    if (stages.isEmpty()) return
+    Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("睡眠构成", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            stages.forEach { (label, minutes) ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(label, color = Muted, fontSize = 16.sp)
+                    Text(formatMinutes(minutes), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
     }
 }
 
@@ -429,6 +470,10 @@ private fun MePage(state: UiState, vm: MainViewModel) {
 @Composable private fun NoticeBanner(text: String) { Surface(color = BrandSoft, shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.CheckCircle, null, tint = Brand); Spacer(Modifier.width(10.dp)); Text(text, color = Color(0xFF205B4B)) } } }
 private fun deviceText(configured: Boolean, online: Boolean?): String = when { !configured -> "等待连接"; online == true -> "在线"; online == false -> "离线"; else -> "已配置" }
 private fun formatOne(value: Double): String = if (value % 1.0 == 0.0) value.toInt().toString() else String.format("%.1f", value)
+private fun formatMinutes(minutes: Int): String =
+    if (minutes >= 60) "${minutes / 60}小时${minutes % 60}分钟" else "${minutes}分钟"
+private fun clockText(timestamp: String): String =
+    timestamp.substringAfter('T', timestamp).take(5)
 private fun dial(context: android.content.Context, phone: String) {
     if (phone.isNotBlank()) {
         context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(phone)}")))

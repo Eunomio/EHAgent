@@ -16,7 +16,8 @@
 | C6c 抓图 | `POST /api/v1/devices/c6c/capture` |
 | 获取C6c临时HLS直播地址 | `POST /api/v1/devices/c6c/live` |
 | 获取C6c安卓SDK播放会话 | `POST /api/v1/devices/c6c/sdk-session` |
-| 接收睡眠摘要 | `POST /api/v1/ingest/sleep-summaries` |
+| 接收正式睡眠报告 | `POST /api/v1/ingest/sleep-reports` |
+| 兼容旧睡眠摘要地址 | `POST /api/v1/ingest/sleep-summaries` |
 | 接收模型判断 | `POST /api/v1/ingest/safety-results` |
 | 上传训练图片 | `POST /api/v1/ingest/vision-samples` |
 | 提交老人反馈 | `POST /api/v1/resident/feedback` |
@@ -46,6 +47,8 @@
 当`result`为`obstacle`时，Windows Agent调用LLM生成`title`、`explanation`和`suggestion`。LLM不能修改`result`。未配置Key、超时或返回格式错误时，返回内容中的`language.source`为`template`。
 
 睡眠数据写入后会生成`analysis.content.summary`；老人反馈同时保留`message`原文和`summary`摘要。
+
+正式睡眠报告使用`device_serial + external_report_id`识别平台中的唯一报告。重复推送会更新原记录。配置`EH_SLEEP_WEBHOOK_TOKEN`后，请求必须携带`X-EH-Sleep-Token`。萤石设备报告缺少`device_serial`返回422，与后端绑定的设备序列号不一致返回409。住户接口不会返回设备序列号和平台报告编号。
 
 安卓端只在老人主动查看时调用`POST /api/v1/devices/c6c/sdk-session`。接口返回EZPlayer初始化所需的AppKey、AccessToken、设备序列号、通道号和播放验证码，AppSecret始终留在后端；暂停通道检查后接口返回409。当前项目用于同一家庭可信局域网联调，正式外网部署时需要在该接口前增加用户登录、HTTPS和设备级授权。
 

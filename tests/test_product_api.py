@@ -11,6 +11,8 @@ def test_real_empty_dashboard(client: TestClient) -> None:
 
 def test_sleep_summary_keeps_vitals(client: TestClient) -> None:
     payload = {
+        "external_report_id": "sleep-20260813",
+        "device_serial": "SLEEP001",
         "sleep_start": "2026-08-12T22:41:00+08:00",
         "sleep_end": "2026-08-13T06:32:00+08:00",
         "duration_minutes": 471,
@@ -22,13 +24,37 @@ def test_sleep_summary_keeps_vitals(client: TestClient) -> None:
         "measured_at": "2026-08-13T06:35:00+08:00",
         "samples": [],
     }
-    assert client.post("/api/v1/ingest/sleep-summaries", json=payload).status_code == 200
+    assert client.post("/api/v1/ingest/sleep-reports", json=payload).status_code == 200
     latest = client.get("/api/v1/resident/sleep").json()["latest"]
     assert latest["heart_rate"] == 62
     assert latest["respiratory_rate"] == 16.2
     analysis = client.get("/api/v1/resident/sleep").json()["analysis"]
     assert analysis["source"] == "template"
     assert "62" in analysis["content"]["summary"]
+
+
+def test_sleep_report_is_updated_by_external_identity(client: TestClient) -> None:
+    payload = {
+        "external_report_id": "report-one",
+        "device_serial": "SLEEP001",
+        "sleep_start": "2026-08-12T23:00:00+08:00",
+        "sleep_end": "2026-08-13T06:00:00+08:00",
+        "duration_minutes": 400,
+        "heart_rate": 61,
+        "quality": "usable",
+        "data_status": "preliminary",
+        "source": "ezviz_sleep_assistant",
+        "measured_at": "2026-08-13T06:05:00+08:00",
+    }
+    first = client.post("/api/v1/ingest/sleep-reports", json=payload).json()
+    payload.update({"duration_minutes": 410, "data_status": "final"})
+    second = client.post("/api/v1/ingest/sleep-reports", json=payload).json()
+
+    assert second["id"] == first["id"]
+    history = client.get("/api/v1/resident/sleep").json()["history"]
+    assert len(history) == 1
+    assert history[0]["duration_minutes"] == 410
+    assert history[0]["data_status"] == "final"
 
 
 def test_safety_task_and_action(client: TestClient) -> None:
