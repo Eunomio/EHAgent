@@ -82,13 +82,7 @@ private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.
         },
         floatingActionButton = {
             if (page != Page.ASSISTANT) {
-                ExtendedFloatingActionButton(
-                    onClick = { page = Page.ASSISTANT },
-                    icon = { Icon(Icons.Rounded.AutoAwesome, null) },
-                    text = { Text("问小安", fontSize = 17.sp) },
-                    containerColor = Brand,
-                    contentColor = Color.White,
-                )
+                DraggableAssistantButton { page = Page.ASSISTANT }
             }
         },
         snackbarHost = { SnackbarHost(remember { SnackbarHostState() }) },
@@ -108,7 +102,16 @@ private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.
 
 @Composable
 private fun PageBody(content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 22.dp), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(
+            start = 20.dp,
+            top = 22.dp,
+            end = 20.dp,
+            bottom = 92.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        content = content,
+    )
 }
 
 @Composable
