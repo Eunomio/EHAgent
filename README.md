@@ -2,7 +2,7 @@
 
 面向独居和居家养老场景的 Android 产品框架。老人端提供通道安全、睡眠、心率、呼吸频率和联系家人功能；本地 FastAPI 服务负责连接萤石设备、保存数据和接收视觉模型结果。
 
-当前版本为 `0.6.0`，旧版网页界面已经移除。页面不会自动生成健康数据，未连接设备时会明确显示“等待连接”或“暂未同步”。
+当前版本为 `0.7.0`，旧版网页界面已经移除。页面不会自动生成健康数据，未连接设备时会明确显示“等待连接”或“暂未同步”。
 
 ## 已完成
 
@@ -15,6 +15,7 @@
 - 通道障碍物判断结果、老人处理动作和家人协助请求
 - 训练图片与标注上传接口
 - LLM生成通道整改建议、睡眠小结和老人反馈摘要，未配置时自动使用模板
+- 全局“小安”生活助手，支持家庭信息问答、一般生活问答、语音输入、回答朗读、公开来源和动作确认
 - GitHub Actions 自动构建可安装 APK
 
 萤石 AppKey、AppSecret 和设备验证码写在家中电脑的 `.env`。AppSecret始终由后端保管；APK只保存本地服务地址，并在打开画面时取得SDK播放会话，无需 Engineering API key。
@@ -27,9 +28,11 @@ EH_LLM_PROVIDER=openai
 EH_LLM_API_KEY=你的APIKey
 EH_LLM_MODEL=gpt-5.4-nano
 EH_LLM_API_BASE=https://api.openai.com/v1
+EH_ASSISTANT_WEB_SEARCH_ENABLED=true
+EH_ASSISTANT_LOCATION=上海市
 ```
 
-重启后端后，在`http://127.0.0.1:8000/docs`调用`POST /api/v1/llm/test`。返回`source: llm`表示连接成功；返回`source: template`时，产品仍会使用固定模板完成流程。
+重启后端后，在`http://127.0.0.1:8000/docs`调用`POST /api/v1/llm/test`。返回`source: llm`表示连接成功；返回`source: template`时，产品仍会使用固定模板完成安全、睡眠和反馈流程。`EH_ASSISTANT_LOCATION`填写老人所在城市，便于回答天气和本地生活问题，无需填写家庭详细地址。
 
 ## 快速使用
 
@@ -64,7 +67,7 @@ Android 模拟器使用 `http://10.0.2.2:8000`。
 - [萤石 C6c 接入与调试](docs/DEVICE_INTEGRATION.md)
 - [基础模型、采集数据与上传方法](docs/MODEL_AND_DATA_GUIDE.md)
 - [后端接口说明](docs/API.md)
-- [比赛期完整PRD](docs/比赛期产品需求文档_PRD_v1.6.md)
+- [比赛期完整PRD](docs/比赛期产品需求文档_PRD_v1.7.md)
 - [LLM模块PRD](docs/PRD_LLM_MODULE.md)
 
 ## 目录

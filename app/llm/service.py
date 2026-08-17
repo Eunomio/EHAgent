@@ -134,6 +134,58 @@ class LlmService:
             update={"needs_follow_up": generated.needs_follow_up or needs_follow_up}
         ), source
 
+    async def chat_assistant(
+        self,
+        message: str,
+        context: dict[str, Any],
+        history: list[dict[str, Any]],
+    ) -> tuple[str, list[dict[str, str]], str]:
+        fallback = self._assistant_fallback(message, context)
+        if not self.configured:
+            return fallback, [], "template"
+
+        conversation = [
+            {"role": item["role"], "content": item["content"]}
+            for item in history[-10:]
+        ]
+        request_body: dict[str, Any] = {
+            "model": self.settings.llm_model,
+            "instructions": (
+                "你叫小安，是面向老年人的中文生活助手。回答直接、温和、具体，优先使用短句。"
+                "可以回答一般生活问题，也可以使用提供的当前生活信息。只引用其中真实存在的数据，不补充缺失数值。"
+                "涉及天气、新闻、政策、交通、诈骗案例等会变化的信息时使用联网搜索。"
+                "不要展示模型、接口或内部处理过程。不要把健康数据解释成诊断。"
+                "如果用户描述胸痛、呼吸困难、失去意识或正在跌倒等紧急情况，先建议立即呼叫急救并联系身边的人。"
+                "涉及联系家人或改变设备状态时，只说明可以协助，等待产品提供确认按钮。"
+            ),
+            "input": json.dumps(
+                {
+                    "current_life_context": context,
+                    "recent_conversation": conversation,
+                    "resident_message": message,
+                },
+                ensure_ascii=False,
+            ),
+            "max_output_tokens": self.settings.llm_max_output_tokens,
+        }
+        if self.settings.assistant_web_search_enabled:
+            request_body["tools"] = [{"type": "web_search"}]
+
+        try:
+            response = await self.client.post(
+                f"{self.settings.llm_api_base.rstrip('/')}/responses",
+                headers={
+                    "Authorization": f"Bearer {self.settings.llm_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=request_body,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return self._output_text(payload), self._output_sources(payload), "llm"
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            return fallback, [], "template"
+
     async def _generate(
         self,
         name: str,
@@ -182,6 +234,47 @@ class LlmService:
                 if content.get("type") == "output_text" and content.get("text"):
                     return str(content["text"])
         raise ValueError("LLM response did not contain output text")
+
+    @staticmethod
+    def _output_sources(payload: dict[str, Any]) -> list[dict[str, str]]:
+        sources: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in payload.get("output", []):
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content", []):
+                for annotation in content.get("annotations", []):
+                    if annotation.get("type") != "url_citation":
+                        continue
+                    url = str(annotation.get("url") or "")
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    sources.append({
+                        "title": str(annotation.get("title") or "查看来源"),
+                        "url": url,
+                    })
+        return sources[:5]
+
+    @staticmethod
+    def _assistant_fallback(message: str, context: dict[str, Any]) -> str:
+        sleep = context.get("latest_sleep")
+        safety = context.get("open_safety_task")
+        if any(word in message for word in ("睡", "心率", "呼吸")) and sleep:
+            minutes = int(sleep["duration_minutes"])
+            parts = [f"最近一次睡眠共{minutes // 60}小时{minutes % 60}分钟。"]
+            if sleep.get("heart_rate") is not None:
+                parts.append(f"平均心率{sleep['heart_rate']}次/分。")
+            if sleep.get("respiratory_rate") is not None:
+                parts.append(f"平均呼吸{sleep['respiratory_rate']}次/分。")
+            return "".join(parts)
+        if any(word in message for word in ("安全", "走道", "摄像头")):
+            if safety:
+                return f"当前有一条提醒：{safety['explanation']} {safety['suggestion']}"
+            return "当前没有待处理的居家安全提醒。您也可以到“居家安全”查看实时画面。"
+        if "联系" in message and "家人" in message:
+            return "可以，我会先请您确认，确认后再通知家人联系您。"
+        return "我现在可以回答家中的安全和睡眠情况。其他生活问题暂时无法查询，请稍后再试。"
 
     @staticmethod
     def _sleep_fields(item: dict[str, Any]) -> dict[str, Any]:

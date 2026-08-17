@@ -2,6 +2,7 @@ from typing import Annotated, cast
 
 from fastapi import Depends, Request
 
+from app.assistant.service import AssistantService
 from app.core.config import Settings
 from app.devices.ezviz import EzvizClient
 from app.llm.service import LlmService
@@ -24,7 +25,12 @@ def get_llm(request: Request) -> LlmService:
     return cast(LlmService, request.app.state.llm)
 
 
+def get_assistant(request: Request) -> AssistantService:
+    return cast(AssistantService, request.app.state.assistant)
+
+
 StoreDep = Annotated[ProductStore, Depends(get_store)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 EzvizDep = Annotated[EzvizClient, Depends(get_ezviz)]
 LlmDep = Annotated[LlmService, Depends(get_llm)]
+AssistantDep = Annotated[AssistantService, Depends(get_assistant)]

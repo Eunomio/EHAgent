@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     llm_api_base: str = "https://api.openai.com/v1"
     llm_timeout_seconds: float = Field(default=15, ge=1, le=60)
     llm_max_output_tokens: int = Field(default=500, ge=100, le=2000)
+    assistant_web_search_enabled: bool = True
+    assistant_location: str = ""
 
 
 @lru_cache(maxsize=1)

@@ -1,6 +1,6 @@
 [project]
 name = "ehagent"
-version = "0.6.0"
+version = "0.7.0"
 description = "居安 Agent 老人端与本地设备服务"
 requires-python = ">=3.11"
 dependencies = [

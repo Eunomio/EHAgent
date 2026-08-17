@@ -55,3 +55,39 @@ def test_invalid_llm_output_uses_template() -> None:
         assert copy.suggestion == "建议将纸箱移到走道外。"
 
     asyncio.run(scenario())
+
+
+def test_assistant_enables_web_search_and_returns_sources() -> None:
+    async def scenario() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = request.read().decode("utf-8")
+            assert '"type":"web_search"' in body.replace(" ", "")
+            return httpx.Response(200, json={
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "上海今天有雨，出门请带伞。",
+                        "annotations": [{
+                            "type": "url_citation",
+                            "title": "天气信息",
+                            "url": "https://example.test/weather",
+                        }],
+                    }],
+                }]
+            })
+
+        settings = Settings(
+            llm_enabled=True, llm_api_key="test-key", llm_model="test-model",
+            llm_api_base="https://example.test/v1",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            service = LlmService(settings, client)
+            reply, sources, source = await service.chat_assistant("今天出门带伞吗？", {}, [])
+        assert source == "llm"
+        assert "带伞" in reply
+        assert sources == [{
+            "title": "天气信息", "url": "https://example.test/weather"
+        }]
+
+    asyncio.run(scenario())

@@ -65,6 +65,27 @@ class ProductStore:
                     needs_follow_up INTEGER NOT NULL, source TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS assistant_conversation (
+                    id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS assistant_message (
+                    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL, content TEXT NOT NULL, source TEXT NOT NULL,
+                    sources_json TEXT NOT NULL DEFAULT '[]',
+                    context_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES assistant_conversation(id)
+                );
+                CREATE INDEX IF NOT EXISTS ix_assistant_message_conversation
+                    ON assistant_message(conversation_id, created_at);
+                CREATE TABLE IF NOT EXISTS assistant_action (
+                    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL, kind TEXT NOT NULL, label TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES assistant_conversation(id),
+                    FOREIGN KEY(message_id) REFERENCES assistant_message(id)
+                );
                 """
             )
             defaults = {
@@ -303,3 +324,122 @@ class ProductStore:
         for row in rows:
             row["needs_follow_up"] = bool(row["needs_follow_up"])
         return rows
+
+    def create_assistant_conversation(self, title: str) -> dict[str, Any]:
+        timestamp = now_iso()
+        record = {
+            "id": str(uuid4()), "title": title or "与小安的对话",
+            "created_at": timestamp, "updated_at": timestamp,
+        }
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO assistant_conversation VALUES (:id,:title,:created_at,:updated_at)",
+                record,
+            )
+        return record
+
+    def get_assistant_conversation(self, conversation_id: str | None) -> dict[str, Any] | None:
+        if not conversation_id:
+            return None
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM assistant_conversation WHERE id=?", (conversation_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def add_assistant_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        source: str,
+        sources: list[dict[str, str]] | None = None,
+        context_used: list[str] | None = None,
+    ) -> dict[str, Any]:
+        record = {
+            "id": str(uuid4()), "conversation_id": conversation_id, "role": role,
+            "content": content, "source": source,
+            "sources_json": json.dumps(sources or [], ensure_ascii=False),
+            "context_json": json.dumps(context_used or [], ensure_ascii=False),
+            "created_at": now_iso(),
+        }
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO assistant_message VALUES "
+                "(:id,:conversation_id,:role,:content,:source,:sources_json,:context_json,:created_at)",
+                record,
+            )
+            db.execute(
+                "UPDATE assistant_conversation SET updated_at=? WHERE id=?",
+                (record["created_at"], conversation_id),
+            )
+        return self._decode_assistant_message(record)
+
+    def assistant_messages(
+        self, conversation_id: str, limit: int = 20, with_actions: bool = False
+    ) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM (SELECT rowid AS message_order, * FROM assistant_message "
+                "WHERE conversation_id=? ORDER BY rowid DESC LIMIT ?) ORDER BY message_order ASC",
+                (conversation_id, limit),
+            )]
+        messages = [self._decode_assistant_message(row) for row in rows]
+        if with_actions:
+            for message in messages:
+                message["actions"] = self.assistant_actions(message["id"])
+        return messages
+
+    def create_assistant_action(
+        self, conversation_id: str, message_id: str, kind: str, label: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        record = {
+            "id": str(uuid4()), "conversation_id": conversation_id,
+            "message_id": message_id, "kind": kind, "label": label,
+            "payload_json": json.dumps(payload, ensure_ascii=False), "status": "pending",
+            "created_at": timestamp, "updated_at": timestamp,
+        }
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO assistant_action VALUES "
+                "(:id,:conversation_id,:message_id,:kind,:label,:payload_json,:status,:created_at,:updated_at)",
+                record,
+            )
+        return self._decode_assistant_action(record)
+
+    def assistant_actions(self, message_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM assistant_action WHERE message_id=? ORDER BY created_at", (message_id,)
+            )]
+        return [self._decode_assistant_action(row) for row in rows]
+
+    def get_assistant_action(self, action_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM assistant_action WHERE id=?", (action_id,)).fetchone()
+        return self._decode_assistant_action(dict(row)) if row else None
+
+    def update_assistant_action(self, action_id: str, status: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE assistant_action SET status=?,updated_at=? WHERE id=?",
+                (status, now_iso(), action_id),
+            )
+        return self.get_assistant_action(action_id)
+
+    @staticmethod
+    def _decode_assistant_message(record: dict[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        result.pop("message_order", None)
+        result["sources"] = json.loads(result.pop("sources_json", "[]"))
+        result["context_used"] = json.loads(result.pop("context_json", "[]"))
+        result.setdefault("actions", [])
+        return result
+
+    @staticmethod
+    def _decode_assistant_action(record: dict[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        result["payload"] = json.loads(result.pop("payload_json", "{}"))
+        return result

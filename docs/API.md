@@ -23,6 +23,9 @@
 | 查看老人反馈摘要 | `GET /api/v1/resident/feedback` |
 | 查看LLM配置状态 | `GET /api/v1/llm/status` |
 | 测试LLM连接与结构化输出 | `POST /api/v1/llm/test` |
+| 向小安提问 | `POST /api/v1/assistant/chat` |
+| 恢复一次对话 | `GET /api/v1/assistant/conversations/{id}` |
+| 确认小安建议的动作 | `POST /api/v1/assistant/actions/{id}/confirm` |
 
 模型结果示例：
 
@@ -47,3 +50,5 @@
 安卓端只在老人主动查看时调用`POST /api/v1/devices/c6c/sdk-session`。接口返回EZPlayer初始化所需的AppKey、AccessToken、设备序列号、通道号和播放验证码，AppSecret始终留在后端；暂停通道检查后接口返回409。当前项目用于同一家庭可信局域网联调，正式外网部署时需要在该接口前增加用户登录、HTTPS和设备级授权。
 
 `POST /api/v1/devices/c6c/live`保留给电脑端排查标准HLS直播地址，安卓产品界面不再使用该地址播放。
+
+小安每轮只接收后端整理出的当前生活摘要和最近对话。`POST /api/v1/assistant/chat`返回本人消息、小安回答、使用过的家庭信息名称、公开来源和待确认动作。天气、新闻、政策、交通和近期诈骗信息等时效问题会按需联网查询。联系家人的动作必须再调用确认接口才会生成帮助请求。

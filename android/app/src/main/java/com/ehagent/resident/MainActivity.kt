@@ -34,13 +34,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 
-private val Brand = Color(0xFF2E7D67)
-private val BrandSoft = Color(0xFFE4F3ED)
-private val Warm = Color(0xFFF4A340)
-private val WarmSoft = Color(0xFFFFF0DC)
-private val Ink = Color(0xFF202622)
-private val Muted = Color(0xFF66706A)
-private val Canvas = Color(0xFFF6F7F3)
+internal val Brand = Color(0xFF2E7D67)
+internal val BrandSoft = Color(0xFFE4F3ED)
+internal val Warm = Color(0xFFF4A340)
+internal val WarmSoft = Color(0xFFFFF0DC)
+internal val Ink = Color(0xFF202622)
+internal val Muted = Color(0xFF66706A)
+internal val Canvas = Color(0xFFF6F7F3)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,30 +59,47 @@ private fun EHAgentTheme(content: @Composable () -> Unit) {
 }
 
 private enum class Page(val label: String, val icon: ImageVector) {
-    HOME("首页", Icons.Rounded.Home), SAFETY("安全", Icons.Rounded.HealthAndSafety), SLEEP("睡眠", Icons.Rounded.Bedtime), ME("我的", Icons.Rounded.Person)
+    HOME("首页", Icons.Rounded.Home), SAFETY("安全", Icons.Rounded.HealthAndSafety),
+    SLEEP("睡眠", Icons.Rounded.Bedtime), ME("我的", Icons.Rounded.Person),
+    ASSISTANT("问小安", Icons.Rounded.AutoAwesome),
 }
 
 @Composable
 private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf(Page.HOME) }
+    val mainPages = remember { listOf(Page.HOME, Page.SAFETY, Page.SLEEP, Page.ME) }
     Scaffold(
         containerColor = Canvas,
         bottomBar = {
-            NavigationBar(containerColor = Color.White, tonalElevation = 3.dp) {
-                Page.entries.forEach { item ->
-                    NavigationBarItem(selected = page == item, onClick = { page = item }, icon = { Icon(item.icon, item.label) }, label = { Text(item.label, fontSize = 14.sp) }, colors = NavigationBarItemDefaults.colors(selectedIconColor = Brand, selectedTextColor = Brand, indicatorColor = BrandSoft))
+            if (page != Page.ASSISTANT) {
+                NavigationBar(containerColor = Color.White, tonalElevation = 3.dp) {
+                    mainPages.forEach { item ->
+                        NavigationBarItem(selected = page == item, onClick = { page = item }, icon = { Icon(item.icon, item.label) }, label = { Text(item.label, fontSize = 14.sp) }, colors = NavigationBarItemDefaults.colors(selectedIconColor = Brand, selectedTextColor = Brand, indicatorColor = BrandSoft))
+                    }
                 }
             }
         },
-        snackbarHost = { SnackbarHost(remember { SnackbarHostState() }) }
+        floatingActionButton = {
+            if (page != Page.ASSISTANT) {
+                ExtendedFloatingActionButton(
+                    onClick = { page = Page.ASSISTANT },
+                    icon = { Icon(Icons.Rounded.AutoAwesome, null) },
+                    text = { Text("问小安", fontSize = 17.sp) },
+                    containerColor = Brand,
+                    contentColor = Color.White,
+                )
+            }
+        },
+        snackbarHost = { SnackbarHost(remember { SnackbarHostState() }) },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (page) {
-                Page.HOME -> HomePage(state, viewModel, onSafety = { page = Page.SAFETY }, onSleep = { page = Page.SLEEP })
+                Page.HOME -> HomePage(state, viewModel, onSafety = { page = Page.SAFETY }, onSleep = { page = Page.SLEEP }, onAssistant = { page = Page.ASSISTANT })
                 Page.SAFETY -> SafetyPage(state, viewModel)
                 Page.SLEEP -> SleepPage(state, viewModel)
                 Page.ME -> MePage(state, viewModel)
+                Page.ASSISTANT -> AssistantPage(state, viewModel, onBack = { page = Page.HOME })
             }
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Brand)
         }
@@ -95,7 +112,7 @@ private fun PageBody(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-private fun HomePage(state: UiState, vm: MainViewModel, onSafety: () -> Unit, onSleep: () -> Unit) {
+private fun HomePage(state: UiState, vm: MainViewModel, onSafety: () -> Unit, onSleep: () -> Unit, onAssistant: () -> Unit) {
     val context = LocalContext.current
     PageBody {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -107,6 +124,22 @@ private fun HomePage(state: UiState, vm: MainViewModel, onSafety: () -> Unit, on
         }
         state.error?.let { ConnectionBanner(it) }
         state.notice?.let { NoticeBanner(it) }
+        Card(
+            onClick = onAssistant,
+            shape = RoundedCornerShape(26.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF2F6F62)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(Modifier.padding(21.dp), verticalAlignment = Alignment.CenterVertically) {
+                RoundIcon(Icons.Rounded.AutoAwesome, Color.White, Color.White.copy(alpha = .16f))
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("有事问小安", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text("生活问题、睡眠和家中情况都可以问", color = Color.White.copy(.82f), fontSize = 16.sp)
+                }
+                Icon(Icons.Rounded.ChevronRight, "打开", tint = Color.White)
+            }
+        }
         SafetyHomeCard(state.dashboard.safety, onSafety)
         SleepHomeCard(state.dashboard.sleep, onSleep)
         ContactCard(state.dashboard.contactName) { dial(context, state.dashboard.contactPhone) }

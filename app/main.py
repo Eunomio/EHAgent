@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.api.router import api_router
+from app.assistant.service import AssistantService
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.devices.ezviz import EzvizClient
@@ -26,6 +27,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store.initialize()
     ezviz = EzvizClient(resolved)
     llm = LlmService(resolved)
+    assistant = AssistantService(store, llm, resolved)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -43,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.store = store
     app.state.ezviz = ezviz
     app.state.llm = llm
+    app.state.assistant = assistant
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

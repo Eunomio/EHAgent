@@ -2,6 +2,7 @@ package com.ehagent.resident
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -16,6 +17,21 @@ data class CameraSdkSession(
     val deviceSerial: String,
     val channelNo: Int,
     val verifyCode: String,
+)
+data class AssistantSource(val title: String, val url: String)
+data class AssistantAction(val id: String, val label: String, val status: String)
+data class AssistantMessage(
+    val id: String,
+    val role: String,
+    val content: String,
+    val sources: List<AssistantSource> = emptyList(),
+    val contextUsed: List<String> = emptyList(),
+    val actions: List<AssistantAction> = emptyList(),
+)
+data class AssistantChatResult(
+    val conversationId: String,
+    val userMessage: AssistantMessage,
+    val assistantMessage: AssistantMessage,
 )
 
 class ProductApi(private val baseUrl: String) {
@@ -79,6 +95,53 @@ class ProductApi(private val baseUrl: String) {
     suspend fun updateContact(name: String, phone: String) = request("/api/v1/resident/settings", "PUT", JSONObject().put("contact_name", name).put("contact_phone", phone))
     suspend fun sendFeedback(topic: String, message: String) = request("/api/v1/resident/feedback", "POST", JSONObject().put("topic", topic).put("message", message))
     suspend fun settings(): JSONObject = request("/api/v1/resident/settings")
+
+    suspend fun sendAssistantMessage(
+        conversationId: String?,
+        message: String,
+    ): AssistantChatResult {
+        val body = JSONObject().put("message", message)
+        conversationId?.let { body.put("conversation_id", it) }
+        val root = request("/api/v1/assistant/chat", "POST", body)
+        return AssistantChatResult(
+            conversationId = root.getString("conversation_id"),
+            userMessage = root.getJSONObject("user_message").toAssistantMessage(),
+            assistantMessage = root.getJSONObject("assistant_message").toAssistantMessage(),
+        )
+    }
+
+    suspend fun assistantConversation(conversationId: String): List<AssistantMessage> {
+        return request("/api/v1/assistant/conversations/$conversationId")
+            .getJSONArray("messages").mapObjects { it.toAssistantMessage() }
+    }
+
+    suspend fun confirmAssistantAction(actionId: String): AssistantAction {
+        return request("/api/v1/assistant/actions/$actionId/confirm", "POST")
+            .toAssistantAction()
+    }
 }
 
 private fun JSONObject.optionalDouble(key: String): Double? = if (has(key) && !isNull(key)) optDouble(key) else null
+
+private fun JSONObject.toAssistantMessage() = AssistantMessage(
+    id = getString("id"),
+    role = getString("role"),
+    content = getString("content"),
+    sources = optJSONArray("sources")?.mapObjects {
+        AssistantSource(it.optString("title", "查看来源"), it.getString("url"))
+    }.orEmpty(),
+    contextUsed = optJSONArray("context_used")?.mapStrings().orEmpty(),
+    actions = optJSONArray("actions")?.mapObjects { it.toAssistantAction() }.orEmpty(),
+)
+
+private fun JSONObject.toAssistantAction() = AssistantAction(
+    id = getString("id"),
+    label = getString("label"),
+    status = getString("status"),
+)
+
+private fun <T> JSONArray.mapObjects(transform: (JSONObject) -> T): List<T> =
+    (0 until length()).map { transform(getJSONObject(it)) }
+
+private fun JSONArray.mapStrings(): List<String> =
+    (0 until length()).map { getString(it) }

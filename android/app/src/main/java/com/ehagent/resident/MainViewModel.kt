@@ -18,6 +18,9 @@ data class UiState(
     val cameraStreamLoading: Boolean = false,
     val cameraSession: CameraSdkSession? = null,
     val cameraStreamError: String? = null,
+    val assistantMessages: List<AssistantMessage> = emptyList(),
+    val assistantLoading: Boolean = false,
+    val assistantError: String? = null,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -27,6 +30,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var backendUrl: String
         get() = preferences.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
         private set(value) { preferences.edit().putString("backend_url", value.trimEnd('/')).apply() }
+    private var assistantConversationId: String?
+        get() = preferences.getString("assistant_conversation_id", null)
+        set(value) { preferences.edit().putString("assistant_conversation_id", value).apply() }
 
     init { refresh() }
 
@@ -37,7 +43,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val dashboard = api.dashboard()
             val devices = api.devices()
             val settings = api.settings()
-            _state.value = UiState(false, dashboard, devices, cameraPaused = settings.optBoolean("camera_paused"), sleepPaused = settings.optBoolean("sleep_alerts_paused"))
+            _state.value = _state.value.copy(
+                loading = false,
+                dashboard = dashboard,
+                devices = devices,
+                cameraPaused = settings.optBoolean("camera_paused"),
+                sleepPaused = settings.optBoolean("sleep_alerts_paused"),
+                error = null,
+            )
         }.onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "暂时无法连接") }
     }
 
@@ -131,5 +144,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onSent()
             }
             .onFailure { _state.value = _state.value.copy(error = it.message) }
+    }
+
+    fun loadAssistantConversation() = viewModelScope.launch {
+        val conversationId = assistantConversationId ?: return@launch
+        if (_state.value.assistantMessages.isNotEmpty()) return@launch
+        runCatching { ProductApi(backendUrl).assistantConversation(conversationId) }
+            .onSuccess { messages ->
+                _state.value = _state.value.copy(assistantMessages = messages, assistantError = null)
+            }
+            .onFailure {
+                assistantConversationId = null
+                _state.value = _state.value.copy(assistantMessages = emptyList())
+            }
+    }
+
+    fun sendAssistantMessage(message: String) = viewModelScope.launch {
+        val clean = message.trim()
+        if (clean.isBlank() || _state.value.assistantLoading) return@launch
+        val localMessage = AssistantMessage("local-${System.nanoTime()}", "user", clean)
+        _state.value = _state.value.copy(
+            assistantMessages = _state.value.assistantMessages + localMessage,
+            assistantLoading = true,
+            assistantError = null,
+        )
+        runCatching {
+            ProductApi(backendUrl).sendAssistantMessage(assistantConversationId, clean)
+        }.onSuccess { result ->
+            assistantConversationId = result.conversationId
+            _state.value = _state.value.copy(
+                assistantMessages = _state.value.assistantMessages
+                    .filterNot { it.id == localMessage.id } +
+                    listOf(result.userMessage, result.assistantMessage),
+                assistantLoading = false,
+            )
+        }.onFailure {
+            _state.value = _state.value.copy(
+                assistantMessages = _state.value.assistantMessages.filterNot {
+                    messageItem -> messageItem.id == localMessage.id
+                },
+                assistantLoading = false,
+                assistantError = "小安暂时没有回应，请检查家庭服务连接后再试。",
+            )
+        }
+    }
+
+    fun confirmAssistantAction(actionId: String) = viewModelScope.launch {
+        runCatching { ProductApi(backendUrl).confirmAssistantAction(actionId) }
+            .onSuccess { updated ->
+                _state.value = _state.value.copy(
+                    assistantMessages = _state.value.assistantMessages.map { message ->
+                        message.copy(actions = message.actions.map { action ->
+                            if (action.id == updated.id) updated else action
+                        })
+                    },
+                    notice = "已请家人联系您",
+                    assistantError = null,
+                )
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    assistantError = "暂时没有发出请求，请稍后再试。"
+                )
+            }
     }
 }
