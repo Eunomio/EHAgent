@@ -77,3 +77,12 @@ def test_paused_camera_rejects_live_stream(client: TestClient) -> None:
     response = client.post("/api/v1/devices/c6c/live")
     assert response.status_code == 409
     assert response.json()["detail"] == "摄像头已暂停，请先恢复检查"
+
+
+def test_paused_camera_rejects_sdk_session(client: TestClient) -> None:
+    assert client.put(
+        "/api/v1/resident/settings", json={"camera_paused": True}
+    ).status_code == 200
+    response = client.post("/api/v1/devices/c6c/sdk-session")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "摄像头已暂停，请先恢复检查"

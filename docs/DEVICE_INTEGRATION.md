@@ -23,15 +23,26 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/devices/c6c/capture
 
 抓图接口使用萤石开放平台的设备抓图能力。当前服务会取得真实图片地址并登记一次待分析检查。模型判断完成后，再把结果发到 `safety-results` 接口。
 
-老人端查看实时画面时，Windows Agent通过萤石开放平台申请30分钟有效的HLS地址，APK使用Media3播放器打开。测试接口：
+老人端查看实时画面时，APK向Windows Agent取得播放会话，再由萤石Android SDK的`EZPlayer`按设备序列号和通道号直接取流。AppSecret不会发送到APK。SDK播放会话测试接口：
 
 ```powershell
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/devices/c6c/live
+$session = Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/devices/c6c/sdk-session
+$session | Select-Object success, device_serial, channel_no
 ```
 
-成功时返回`url`、`protocol: hls`和`expires_in: 1800`。如果返回直播服务未开通、余额不足或权限不足，需要在萤石开放平台确认该应用和设备具备视频预览或标准直播能力。画面默认静音，老人关闭画面、离开居家安全页或把应用切到后台后停止播放。
+成功时会显示`success: True`以及已配置的设备和通道。不要在截图或聊天中发送完整AccessToken和设备验证码。画面默认静音，老人关闭画面、离开居家安全页或把应用切到后台后停止播放。
 
-开发依据：[萤石 Android SDK 文档](https://open.ys7.com/doc/zh/book/4.x/android-sdk.html)、[设备与视频能力](https://open.ys7.com/cn/s/device)。
+Android工程使用官方Maven依赖`io.github.ezviz-open:ezviz-sdk:5.30.2`。在萤石开放平台的移动应用配置中填写安卓包名`com.ehagent.resident`。真机首次测试步骤：
+
+1. 保持Windows Agent运行，并确认手机可以访问电脑的8000端口。
+2. 在APK“我的”页面填写电脑局域网地址，例如`http://192.168.1.20:8000`。
+3. 打开“居家安全”，点击“查看实时画面”。
+4. 画面加载成功后切到其他页面，再返回确认播放器能够重新连接。
+5. C6c使用H.265时优先在ARM64安卓真机验证；x86模拟器可能无法加载或稳定运行SDK的原生解码库。
+
+原有`POST /api/v1/devices/c6c/live`继续保留，方便在电脑上用VLC或ffprobe排查标准HLS地址，APK不再依赖该地址。
+
+开发依据：[萤石 Android SDK下载](https://open.ys7.com/cn/s/download)、[萤石 Android SDK Demo](https://github.com/Ezviz-Open/EzvizSDK-Android)、[EZPlayer接口](https://open.ys7.com/doc/zh/android/com/videogo/openapi/EZPlayer.html)。
 
 ## 无感睡眠助手
 

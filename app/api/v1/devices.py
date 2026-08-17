@@ -59,3 +59,14 @@ async def live_c6c(ezviz: EzvizDep, store: StoreDep) -> dict[str, Any]:
     except EzvizError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"success": True, **stream}
+
+
+@router.post("/c6c/sdk-session")
+async def c6c_sdk_session(ezviz: EzvizDep, store: StoreDep) -> dict[str, Any]:
+    if store.settings().get("camera_paused") == "true":
+        raise HTTPException(409, "摄像头已暂停，请先恢复检查")
+    try:
+        session = await ezviz.sdk_session()
+    except EzvizError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"success": True, **session}

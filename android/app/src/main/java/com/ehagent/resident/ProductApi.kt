@@ -10,6 +10,13 @@ data class SafetyCard(val status: String = "ready", val headline: String = "等�
 data class SleepCard(val headline: String = "睡眠数据暂未同步", val duration: Int? = null, val respiratoryRate: Double? = null, val heartRate: Double? = null, val bedExitCount: Int? = null, val analysis: String? = null)
 data class Dashboard(val greeting: String = "您好", val subtitle: String = "今天也安心生活", val safety: SafetyCard = SafetyCard(), val sleep: SleepCard = SleepCard(), val contactName: String = "家人", val contactPhone: String = "")
 data class DeviceState(val cameraConfigured: Boolean = false, val cameraOnline: Boolean? = null, val sleepConfigured: Boolean = false)
+data class CameraSdkSession(
+    val appKey: String,
+    val accessToken: String,
+    val deviceSerial: String,
+    val channelNo: Int,
+    val verifyCode: String,
+)
 
 class ProductApi(private val baseUrl: String) {
     private suspend fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
@@ -55,8 +62,16 @@ class ProductApi(private val baseUrl: String) {
         return DeviceState(camera.optBoolean("configured"), camera.takeIf { it.has("online") && !it.isNull("online") }?.optBoolean("online"), sleep.optBoolean("configured"))
     }
 
-    suspend fun cameraLiveStream(): String =
-        request("/api/v1/devices/c6c/live", "POST").getString("url")
+    suspend fun cameraSdkSession(): CameraSdkSession {
+        val root = request("/api/v1/devices/c6c/sdk-session", "POST")
+        return CameraSdkSession(
+            appKey = root.getString("app_key"),
+            accessToken = root.getString("access_token"),
+            deviceSerial = root.getString("device_serial"),
+            channelNo = root.optInt("channel_no", 1),
+            verifyCode = root.optString("verify_code"),
+        )
+    }
 
     suspend fun sendHelp(message: String) = request("/api/v1/resident/help", "POST", JSONObject().put("request_type", "contact").put("message", message))
     suspend fun taskAction(taskId: String, action: String) = request("/api/v1/resident/safety/tasks/$taskId/actions", "POST", JSONObject().put("action", action))

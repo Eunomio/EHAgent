@@ -16,7 +16,7 @@ data class UiState(
     val cameraPaused: Boolean = false,
     val sleepPaused: Boolean = false,
     val cameraStreamLoading: Boolean = false,
-    val cameraStreamUrl: String? = null,
+    val cameraSession: CameraSdkSession? = null,
     val cameraStreamError: String? = null,
 )
 
@@ -66,7 +66,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(
                 cameraPaused = paused,
                 cameraStreamLoading = false,
-                cameraStreamUrl = null,
+                cameraSession = null,
                 cameraStreamError = null,
             )
             refresh()
@@ -80,14 +80,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         _state.value = _state.value.copy(
             cameraStreamLoading = true,
-            cameraStreamUrl = null,
+            cameraSession = null,
             cameraStreamError = null,
         )
-        runCatching { ProductApi(backendUrl).cameraLiveStream() }
-            .onSuccess { url ->
+        runCatching { ProductApi(backendUrl).cameraSdkSession() }
+            .onSuccess { session ->
                 _state.value = _state.value.copy(
                     cameraStreamLoading = false,
-                    cameraStreamUrl = url,
+                    cameraSession = session,
                 )
             }
             .onFailure {
@@ -101,7 +101,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stopCameraStream() {
         _state.value = _state.value.copy(
             cameraStreamLoading = false,
-            cameraStreamUrl = null,
+            cameraSession = null,
             cameraStreamError = null,
         )
     }

@@ -3,6 +3,8 @@ package com.ehagent.resident
 import android.os.Bundle
 import android.content.Intent
 import android.net.Uri
+import android.app.Application
+import android.view.SurfaceView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -31,12 +33,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 
 private val Brand = Color(0xFF2E7D67)
 private val BrandSoft = Color(0xFFE4F3ED)
@@ -208,7 +204,7 @@ private fun CameraStreamCard(state: UiState, vm: MainViewModel) {
                     Text("通道实时画面", fontSize = 21.sp, fontWeight = FontWeight.Bold)
                     Text("只有您主动打开时才播放", color = Muted)
                 }
-                if (state.cameraStreamUrl != null) {
+                if (state.cameraSession != null) {
                     TextButton(onClick = vm::stopCameraStream) { Text("关闭画面") }
                 }
             }
@@ -225,7 +221,7 @@ private fun CameraStreamCard(state: UiState, vm: MainViewModel) {
                     Spacer(Modifier.width(12.dp))
                     Text("正在打开画面…", fontSize = 17.sp)
                 }
-                state.cameraStreamUrl != null -> CameraPlayer(state.cameraStreamUrl)
+                state.cameraSession != null -> CameraPlayer(state.cameraSession)
                 else -> {
                     state.cameraStreamError?.let {
                         Text(it, color = Color(0xFFB44336), lineHeight = 24.sp)
@@ -258,59 +254,56 @@ private fun CameraMessage(title: String, detail: String) {
     }
 }
 
-@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-private fun CameraPlayer(url: String) {
+private fun CameraPlayer(session: CameraSdkSession) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var playbackError by remember(url) { mutableStateOf<String?>(null) }
-    val player = remember(url) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(
-                MediaItem.Builder()
-                    .setUri(url)
-                    .setMimeType(MimeTypes.APPLICATION_M3U8)
-                    .build()
-            )
-            volume = 0f
-            playWhenReady = true
-            prepare()
+    var playbackState by remember(session) { mutableStateOf(EzvizPlaybackState.CONNECTING) }
+    var playbackError by remember(session) { mutableStateOf<String?>(null) }
+    val controller = remember(session) {
+        EzvizPlayerController(
+            application = context.applicationContext as Application,
+            session = session,
+        ) { state, detail ->
+            playbackState = state
+            playbackError = detail
         }
     }
-    DisposableEffect(player, lifecycleOwner) {
-        val listener = object : Player.Listener {
-            override fun onPlayerError(error: PlaybackException) {
-                playbackError = "画面播放失败，请关闭后重试"
-            }
-        }
+    DisposableEffect(controller, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> player.play()
-                Lifecycle.Event.ON_STOP -> player.pause()
+                Lifecycle.Event.ON_START -> controller.onStart()
+                Lifecycle.Event.ON_STOP -> controller.onStop()
                 else -> Unit
             }
         }
-        player.addListener(listener)
         lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            controller.onStart()
+        }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            player.removeListener(listener)
-            player.release()
+            controller.release()
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        AndroidView(
-            factory = { viewContext ->
-                PlayerView(viewContext).apply {
-                    this.player = player
-                    useController = true
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
-                    keepScreenOn = true
-                }
-            },
-            update = { it.player = player },
-            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)),
-        )
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)).background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            AndroidView(
+                factory = { viewContext ->
+                    SurfaceView(viewContext).apply {
+                        keepScreenOn = true
+                        holder.addCallback(controller)
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+            if (playbackState == EzvizPlaybackState.CONNECTING) {
+                CircularProgressIndicator(color = Color.White)
+            }
+        }
         Text("实时画面默认静音，离开本页后自动关闭", color = Muted, fontSize = 14.sp)
         playbackError?.let { Text(it, color = Color(0xFFB44336)) }
     }

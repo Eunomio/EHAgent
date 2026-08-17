@@ -15,6 +15,7 @@
 | C6c 连通测试 | `POST /api/v1/devices/c6c/test` |
 | C6c 抓图 | `POST /api/v1/devices/c6c/capture` |
 | 获取C6c临时HLS直播地址 | `POST /api/v1/devices/c6c/live` |
+| 获取C6c安卓SDK播放会话 | `POST /api/v1/devices/c6c/sdk-session` |
 | 接收睡眠摘要 | `POST /api/v1/ingest/sleep-summaries` |
 | 接收模型判断 | `POST /api/v1/ingest/safety-results` |
 | 上传训练图片 | `POST /api/v1/ingest/vision-samples` |
@@ -43,4 +44,6 @@
 
 睡眠数据写入后会生成`analysis.content.summary`；老人反馈同时保留`message`原文和`summary`摘要。
 
-`POST /api/v1/devices/c6c/live`只在老人主动查看时调用，返回30分钟有效的HLS地址。AppKey、AppSecret、AccessToken和设备验证码不会返回给APK；暂停通道检查后该接口返回409。
+安卓端只在老人主动查看时调用`POST /api/v1/devices/c6c/sdk-session`。接口返回EZPlayer初始化所需的AppKey、AccessToken、设备序列号、通道号和播放验证码，AppSecret始终留在后端；暂停通道检查后接口返回409。当前项目用于同一家庭可信局域网联调，正式外网部署时需要在该接口前增加用户登录、HTTPS和设备级授权。
+
+`POST /api/v1/devices/c6c/live`保留给电脑端排查标准HLS直播地址，安卓产品界面不再使用该地址播放。

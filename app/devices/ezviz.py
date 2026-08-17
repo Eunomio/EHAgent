@@ -105,3 +105,22 @@ class EzvizClient:
             "protocol": "hls",
             "expires_in": 1800,
         }
+
+    async def sdk_session(self) -> dict[str, Any]:
+        """Return the client-side values required by EZOpenSDK.
+
+        AppSecret is deliberately retained by the backend. The Android client
+        receives the access token that the official SDK requires for playback.
+        """
+
+        if not self.settings.ezviz_app_key:
+            raise EzvizError("请先在 .env 中配置萤石 AppKey")
+        if not self.settings.ezviz_device_serial:
+            raise EzvizError("请先配置 C6c 设备序列号")
+        return {
+            "app_key": self.settings.ezviz_app_key,
+            "access_token": await self.token(),
+            "device_serial": self.settings.ezviz_device_serial,
+            "channel_no": self.settings.ezviz_channel_no,
+            "verify_code": self.settings.ezviz_verify_code,
+        }

@@ -43,3 +43,32 @@ def test_live_address_uses_short_lived_hls_without_returning_credentials() -> No
         assert "ABCDEF" not in result
 
     asyncio.run(scenario())
+
+
+def test_sdk_session_keeps_app_secret_on_backend() -> None:
+    async def scenario() -> None:
+        settings = Settings(
+            ezviz_app_key="test-app-key",
+            ezviz_app_secret="server-only-secret",
+            ezviz_access_token="test-token",
+            ezviz_device_serial="C6C123",
+            ezviz_channel_no=1,
+            ezviz_verify_code="ABCDEF",
+        )
+        service = EzvizClient(settings)
+        try:
+            result = await service.sdk_session()
+        finally:
+            await service.close()
+
+        assert result == {
+            "app_key": "test-app-key",
+            "access_token": "test-token",
+            "device_serial": "C6C123",
+            "channel_no": 1,
+            "verify_code": "ABCDEF",
+        }
+        assert "app_secret" not in result
+        assert "server-only-secret" not in result.values()
+
+    asyncio.run(scenario())
