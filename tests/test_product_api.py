@@ -68,3 +68,12 @@ def test_llm_status_does_not_expose_key(client: TestClient) -> None:
     body = client.get("/api/v1/llm/status").json()
     assert body["configured"] is False
     assert "api_key" not in body
+
+
+def test_paused_camera_rejects_live_stream(client: TestClient) -> None:
+    assert client.put(
+        "/api/v1/resident/settings", json={"camera_paused": True}
+    ).status_code == 200
+    response = client.post("/api/v1/devices/c6c/live")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "摄像头已暂停，请先恢复检查"

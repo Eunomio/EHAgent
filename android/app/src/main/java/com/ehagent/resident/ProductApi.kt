@@ -55,6 +55,9 @@ class ProductApi(private val baseUrl: String) {
         return DeviceState(camera.optBoolean("configured"), camera.takeIf { it.has("online") && !it.isNull("online") }?.optBoolean("online"), sleep.optBoolean("configured"))
     }
 
+    suspend fun cameraLiveStream(): String =
+        request("/api/v1/devices/c6c/live", "POST").getString("url")
+
     suspend fun sendHelp(message: String) = request("/api/v1/resident/help", "POST", JSONObject().put("request_type", "contact").put("message", message))
     suspend fun taskAction(taskId: String, action: String) = request("/api/v1/resident/safety/tasks/$taskId/actions", "POST", JSONObject().put("action", action))
     suspend fun updatePause(camera: Boolean? = null, sleep: Boolean? = null) = request("/api/v1/resident/settings", "PUT", JSONObject().apply { camera?.let { put("camera_paused", it) }; sleep?.let { put("sleep_alerts_paused", it) } })

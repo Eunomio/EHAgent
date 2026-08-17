@@ -15,6 +15,9 @@ data class UiState(
     val notice: String? = null,
     val cameraPaused: Boolean = false,
     val sleepPaused: Boolean = false,
+    val cameraStreamLoading: Boolean = false,
+    val cameraStreamUrl: String? = null,
+    val cameraStreamError: String? = null,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -59,7 +62,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setCameraPaused(paused: Boolean) = viewModelScope.launch {
-        runCatching { ProductApi(backendUrl).updatePause(camera = paused) }.onSuccess { _state.value = _state.value.copy(cameraPaused = paused); refresh() }
+        runCatching { ProductApi(backendUrl).updatePause(camera = paused) }.onSuccess {
+            _state.value = _state.value.copy(
+                cameraPaused = paused,
+                cameraStreamLoading = false,
+                cameraStreamUrl = null,
+                cameraStreamError = null,
+            )
+            refresh()
+        }
+    }
+
+    fun startCameraStream() = viewModelScope.launch {
+        if (_state.value.cameraPaused) {
+            _state.value = _state.value.copy(cameraStreamError = "请先恢复通道检查")
+            return@launch
+        }
+        _state.value = _state.value.copy(
+            cameraStreamLoading = true,
+            cameraStreamUrl = null,
+            cameraStreamError = null,
+        )
+        runCatching { ProductApi(backendUrl).cameraLiveStream() }
+            .onSuccess { url ->
+                _state.value = _state.value.copy(
+                    cameraStreamLoading = false,
+                    cameraStreamUrl = url,
+                )
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    cameraStreamLoading = false,
+                    cameraStreamError = it.message ?: "暂时无法打开画面",
+                )
+            }
+    }
+
+    fun stopCameraStream() {
+        _state.value = _state.value.copy(
+            cameraStreamLoading = false,
+            cameraStreamUrl = null,
+            cameraStreamError = null,
+        )
     }
 
     fun setSleepPaused(paused: Boolean) = viewModelScope.launch {

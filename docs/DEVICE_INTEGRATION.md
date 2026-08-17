@@ -23,6 +23,14 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/devices/c6c/capture
 
 抓图接口使用萤石开放平台的设备抓图能力。当前服务会取得真实图片地址并登记一次待分析检查。模型判断完成后，再把结果发到 `safety-results` 接口。
 
+老人端查看实时画面时，Windows Agent通过萤石开放平台申请30分钟有效的HLS地址，APK使用Media3播放器打开。测试接口：
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/devices/c6c/live
+```
+
+成功时返回`url`、`protocol: hls`和`expires_in: 1800`。如果返回直播服务未开通、余额不足或权限不足，需要在萤石开放平台确认该应用和设备具备视频预览或标准直播能力。画面默认静音，老人关闭画面、离开居家安全页或把应用切到后台后停止播放。
+
 开发依据：[萤石 Android SDK 文档](https://open.ys7.com/doc/zh/book/4.x/android-sdk.html)、[设备与视频能力](https://open.ys7.com/cn/s/device)。
 
 ## 无感睡眠助手
@@ -54,4 +62,3 @@ POST /api/v1/ingest/sleep-summaries
 - Windows 防火墙允许 Python 在专用网络通信。
 - 手机里填写电脑 IPv4 地址，不能填写 `127.0.0.1`。
 - 先用手机浏览器打开 `http://电脑地址:8000/api/v1/health`；看到 `status: ok` 后再回到应用连接。
-

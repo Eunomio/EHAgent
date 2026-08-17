@@ -12,9 +12,12 @@ class EzvizError(RuntimeError):
 
 
 class EzvizClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, client: httpx.AsyncClient | None = None
+    ) -> None:
         self.settings = settings
-        self.client = httpx.AsyncClient(timeout=15)
+        self.client = client or httpx.AsyncClient(timeout=15)
+        self._owns_client = client is None
         self._token = settings.ezviz_access_token
 
     @property
@@ -24,7 +27,8 @@ class EzvizClient:
         return bool(self.settings.ezviz_device_serial and (has_token or has_app))
 
     async def close(self) -> None:
-        await self.client.aclose()
+        if self._owns_client:
+            await self.client.aclose()
 
     async def token(self) -> str:
         if self._token:
@@ -69,3 +73,35 @@ class EzvizClient:
         if not url:
             raise EzvizError("萤石接口未返回图片地址")
         return str(url)
+
+    async def live_address(self) -> dict[str, Any]:
+        """Request a short-lived HLS address without exposing app credentials."""
+
+        if not self.settings.ezviz_device_serial:
+            raise EzvizError("请先配置C6c设备序列号")
+        form: dict[str, Any] = {
+            "accessToken": await self.token(),
+            "deviceSerial": self.settings.ezviz_device_serial,
+            "channelNo": self.settings.ezviz_channel_no,
+            "protocol": 2,
+            "quality": 2,
+            "expireTime": 1800,
+        }
+        if self.settings.ezviz_verify_code:
+            form["code"] = self.settings.ezviz_verify_code
+        response = await self.client.post(
+            f"{self.settings.ezviz_api_base_url}/api/lapp/v2/live/address/get",
+            data=form,
+        )
+        payload = response.json()
+        if str(payload.get("code")) != "200":
+            raise EzvizError(payload.get("msg") or "获取C6c直播地址失败")
+        data = dict(payload.get("data") or {})
+        url = data.get("url")
+        if not url:
+            raise EzvizError("萤石接口未返回直播地址")
+        return {
+            "url": str(url),
+            "protocol": "hls",
+            "expires_in": 1800,
+        }

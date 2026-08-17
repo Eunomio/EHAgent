@@ -26,7 +26,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 
 private val Brand = Color(0xFF2E7D67)
 private val BrandSoft = Color(0xFFE4F3ED)
@@ -157,8 +167,12 @@ private fun ContactCard(name: String, onClick: () -> Unit) {
 @Composable
 private fun SafetyPage(state: UiState, vm: MainViewModel) {
     val context = LocalContext.current
+    DisposableEffect(Unit) {
+        onDispose { vm.stopCameraStream() }
+    }
     PageBody {
         PageTitle("居家安全", "留意每天常走的地方", Icons.Rounded.HealthAndSafety)
+        CameraStreamCard(state, vm)
         if (state.dashboard.safety.taskId == null) {
             EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
         } else {
@@ -174,6 +188,131 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
             }
         }
         SettingsSwitch("暂停通道检查", "需要隐私时可以随时暂停", state.cameraPaused, vm::setCameraPaused)
+    }
+}
+
+@Composable
+private fun CameraStreamCard(state: UiState, vm: MainViewModel) {
+    Card(
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RoundIcon(Icons.Rounded.Videocam, Brand, BrandSoft)
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("通道实时画面", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                    Text("只有您主动打开时才播放", color = Muted)
+                }
+                if (state.cameraStreamUrl != null) {
+                    TextButton(onClick = vm::stopCameraStream) { Text("关闭画面") }
+                }
+            }
+            when {
+                state.cameraPaused -> CameraMessage("通道检查已暂停", "恢复通道检查后可以查看画面")
+                !state.devices.cameraConfigured -> CameraMessage("摄像头等待连接", "连接萤石C6c后可以查看画面")
+                state.devices.cameraOnline == false -> CameraMessage("摄像头当前离线", "请检查摄像头电源和网络")
+                state.cameraStreamLoading -> Row(
+                    Modifier.fillMaxWidth().padding(vertical = 22.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(28.dp), color = Brand)
+                    Spacer(Modifier.width(12.dp))
+                    Text("正在打开画面…", fontSize = 17.sp)
+                }
+                state.cameraStreamUrl != null -> CameraPlayer(state.cameraStreamUrl)
+                else -> {
+                    state.cameraStreamError?.let {
+                        Text(it, color = Color(0xFFB44336), lineHeight = 24.sp)
+                    }
+                    Button(
+                        onClick = vm::startCameraStream,
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Icon(Icons.Rounded.PlayArrow, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (state.cameraStreamError == null) "查看实时画面" else "重新打开",
+                            fontSize = 18.sp,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CameraMessage(title: String, detail: String) {
+    Surface(color = Canvas, shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Text(detail, color = Muted)
+        }
+    }
+}
+
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@Composable
+private fun CameraPlayer(url: String) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var playbackError by remember(url) { mutableStateOf<String?>(null) }
+    val player = remember(url) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(
+                MediaItem.Builder()
+                    .setUri(url)
+                    .setMimeType(MimeTypes.APPLICATION_M3U8)
+                    .build()
+            )
+            volume = 0f
+            playWhenReady = true
+            prepare()
+        }
+    }
+    DisposableEffect(player, lifecycleOwner) {
+        val listener = object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                playbackError = "画面播放失败，请关闭后重试"
+            }
+        }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> player.play()
+                Lifecycle.Event.ON_STOP -> player.pause()
+                else -> Unit
+            }
+        }
+        player.addListener(listener)
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            player.removeListener(listener)
+            player.release()
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        AndroidView(
+            factory = { viewContext ->
+                PlayerView(viewContext).apply {
+                    this.player = player
+                    useController = true
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    keepScreenOn = true
+                }
+            },
+            update = { it.player = player },
+            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)),
+        )
+        Text("实时画面默认静音，离开本页后自动关闭", color = Muted, fontSize = 14.sp)
+        playbackError?.let { Text(it, color = Color(0xFFB44336)) }
     }
 }
 

@@ -48,3 +48,14 @@ async def capture_c6c(ezviz: EzvizDep, store: StoreDep) -> dict[str, Any]:
         raise HTTPException(422, str(exc)) from exc
     check = store.add_safety_check("pending_analysis", "ezviz_c6c", "已取得真实图片，等待模型判断", picture_url)
     return {"success": True, "picture_url": picture_url, "check": check}
+
+
+@router.post("/c6c/live")
+async def live_c6c(ezviz: EzvizDep, store: StoreDep) -> dict[str, Any]:
+    if store.settings().get("camera_paused") == "true":
+        raise HTTPException(409, "摄像头已暂停，请先恢复检查")
+    try:
+        stream = await ezviz.live_address()
+    except EzvizError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"success": True, **stream}

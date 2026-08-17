@@ -14,6 +14,7 @@
 | 设备状态 | `GET /api/v1/devices` |
 | C6c 连通测试 | `POST /api/v1/devices/c6c/test` |
 | C6c 抓图 | `POST /api/v1/devices/c6c/capture` |
+| 获取C6c临时HLS直播地址 | `POST /api/v1/devices/c6c/live` |
 | 接收睡眠摘要 | `POST /api/v1/ingest/sleep-summaries` |
 | 接收模型判断 | `POST /api/v1/ingest/safety-results` |
 | 上传训练图片 | `POST /api/v1/ingest/vision-samples` |
@@ -41,3 +42,5 @@
 当`result`为`obstacle`时，Windows Agent调用LLM生成`title`、`explanation`和`suggestion`。LLM不能修改`result`。未配置Key、超时或返回格式错误时，返回内容中的`language.source`为`template`。
 
 睡眠数据写入后会生成`analysis.content.summary`；老人反馈同时保留`message`原文和`summary`摘要。
+
+`POST /api/v1/devices/c6c/live`只在老人主动查看时调用，返回30分钟有效的HLS地址。AppKey、AppSecret、AccessToken和设备验证码不会返回给APK；暂停通道检查后该接口返回409。
