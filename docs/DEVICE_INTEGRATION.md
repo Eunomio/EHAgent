@@ -60,14 +60,31 @@ POST /api/v1/devices/sleep/test
 
 在 `.env` 中配置 `EH_SLEEP_PROVIDER=ezviz`、`EH_EZVIZ_APP_KEY`、`EH_EZVIZ_APP_SECRET`，并提供 `EH_SLEEP_DEVICE_ID` 或 `EH_SLEEP_DEVICE_SERIAL`。启用 `EH_EZVIZ_AUTO_TOKEN=true` 后，后端仅在内存中获取和缓存访问令牌；令牌、完整序列号和设备验证码不得写入 APK、文档、测试夹具或提交记录。
 
-若只配置设备序列号，适配器会通过萤石睡眠组件的设备 ID 查询接口解析内部 `deviceId`；若已知 `EH_SLEEP_DEVICE_ID`，则不发起该解析请求。当前连通性接口只验证凭证和设备 ID 路径，尚未抓取、转换或入库萤石的睡眠统计数据。
+若只配置设备序列号，适配器会通过萤石睡眠组件的设备 ID 查询接口解析内部 `deviceId`；若已知 `EH_SLEEP_DEVICE_ID`，则不发起该解析请求。
+
+使用下列接口同步指定日期的统计数据；未传 `target_date` 时默认同步前一天：
+
+```text
+POST /api/v1/devices/sleep/sync?target_date=YYYY-MM-DD
+```
+
+同步接口调用萤石的每日睡眠、每日心率和每日呼吸率统计，并写入既有 `sleep-summaries` 契约：
+
+| 项目契约字段 | 萤石来源 | 处理方式 |
+| --- | --- | --- |
+| `sleep_start`、`sleep_end`、`duration_minutes` | 呼吸统计的睡眠起止时间 | 使用 `EH_SLEEP_TIMESTAMP_UTC_OFFSET_HOURS` 解析，计算时长；无有效时间则同步失败。 |
+| `heart_rate`、`heart_rate_min`、`heart_rate_max` | 心率统计的均值、最小值、最大值 | 只接受 20–240 次/分。 |
+| `respiratory_rate`、`respiratory_min`、`respiratory_max` | 呼吸统计的十分钟均值、最小值、最大值 | 日均值由有效十分钟均值计算；只接受 1–80 次/分。 |
+| `samples[].at`、`samples[].heart_rate`、`samples[].respiratory_rate` | 心率分钟曲线、呼吸十分钟曲线 | 以时间戳合并，保留可用的单项或双项采样点。 |
+| `measured_at`、`source`、`quality` | 睡眠结束时间、固定来源、有效字段情况 | 结束时间为测量时间；来源为 `ezviz_sleep_assistant`；无有效心率和呼吸率时标记 `insufficient`。 |
+
+每日睡眠接口返回的睡眠评分和分期尚无当前产品契约字段，暂不入库或展示；统计组件也不提供可确认的离床次数，因此同步时 `bed_exit_count` 保持为空。萤石返回的统计时间字符串不带时区；当前设备返回的昼夜模式暂按 UTC 使用默认偏移 `0`，该项必须在厂商确认或与设备端记录核对后才能改为其他偏移。不得用清醒分期或其他字段推导离床次数、HRV 或医疗结论。
 
 后续数据接入顺序：
 
 1. 以官方睡眠体征监测组件的实际返回为准，确认字段口径、日期边界、时区、单位和数据缺失语义。
-2. 将已授权的睡眠统计映射为 `sleep-summaries`；每晚写入一次摘要，时序采样写入 `samples`。
-3. 每条记录保留 `source`、`measured_at`、质量标记与脱敏调试证据；无记录或字段缺失时标为 `insufficient`，不得补零。
-4. 在 Android 客户端展示前，分别验证设备连通、统计读取、入库与页面读取，不能以接口 200 代替非空数据验证。
+2. 每条记录保留 `source`、`measured_at`、质量标记与脱敏调试证据；无记录或字段缺失时标为 `insufficient`，不得补零。
+3. 在 Android 客户端展示前，分别验证设备连通、统计读取、入库与页面读取，不能以接口 200 代替非空数据验证。
 
 正式授权前，可以使用设备官方导出的真实记录联调：
 

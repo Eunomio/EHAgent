@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     sleep_device_name: str = "萤石无感睡眠伴侣"
     sleep_device_serial: str = ""
     sleep_device_id: str = ""
+    sleep_timestamp_utc_offset_hours: int = Field(default=0, ge=-12, le=14)
     safety_area_name: str = "卧室外走道"
     llm_enabled: bool = False
     llm_provider: str = "openai"
