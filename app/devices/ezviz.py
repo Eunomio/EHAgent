@@ -1,5 +1,6 @@
 """Minimal server-side EZVIZ Open Platform integration."""
 
+from time import time
 from typing import Any
 
 import httpx
@@ -18,7 +19,8 @@ class EzvizClient:
         self.settings = settings
         self.client = client or httpx.AsyncClient(timeout=15)
         self._owns_client = client is None
-        self._token = settings.ezviz_access_token
+        self._token = "" if settings.ezviz_auto_token else settings.ezviz_access_token
+        self._token_expire_at: int | None = None
 
     @property
     def configured(self) -> bool:
@@ -30,10 +32,20 @@ class EzvizClient:
         if self._owns_client:
             await self.client.aclose()
 
-    async def token(self) -> str:
-        if self._token:
+    async def token(self, force_refresh: bool = False) -> str:
+        now_ms = int(time() * 1000)
+        if (
+            not force_refresh
+            and self._token
+            and (
+                self._token_expire_at is None
+                or now_ms < self._token_expire_at - 12 * 60 * 60 * 1000
+            )
+        ):
             return self._token
         if not self.settings.ezviz_app_key or not self.settings.ezviz_app_secret:
+            if self._token:
+                return self._token
             raise EzvizError("请先在.env中配置萤石AppKey和AppSecret")
         response = await self.client.post(
             f"{self.settings.ezviz_api_base_url}/api/lapp/token/get",
@@ -43,7 +55,41 @@ class EzvizClient:
         if str(payload.get("code")) != "200":
             raise EzvizError(payload.get("msg") or "获取萤石访问令牌失败")
         self._token = str(payload["data"]["accessToken"])
+        self._token_expire_at = int(payload["data"]["expireTime"])
         return self._token
+
+    @property
+    def sleep_configured(self) -> bool:
+        return bool(
+            self.settings.sleep_provider == "ezviz"
+            and (self.settings.sleep_device_id or self.settings.sleep_device_serial)
+            and (self.settings.ezviz_app_key and self.settings.ezviz_app_secret or self._token)
+        )
+
+    async def sleep_device_id(self) -> str:
+        if not self.sleep_configured:
+            raise EzvizError("请先在.env中配置萤石睡眠伴侣设备序列号和开放平台凭证")
+        if self.settings.sleep_device_id:
+            return self.settings.sleep_device_id
+
+        async def request(access_token: str) -> dict[str, Any]:
+            response = await self.client.get(
+                f"{self.settings.ezviz_api_base_url}/api/service/sleepDetector/v3/third/huayi/deviceId",
+                headers={"accessToken": access_token},
+                params={"deviceCode": self.settings.sleep_device_serial},
+            )
+            return dict(response.json())
+
+        payload = await request(await self.token())
+        result_code = str(payload.get("code") or (payload.get("meta") or {}).get("code") or "")
+        if result_code == "10002":
+            payload = await request(await self.token(force_refresh=True))
+            result_code = str(payload.get("code") or (payload.get("meta") or {}).get("code") or "")
+        if result_code != "200" or not payload.get("data"):
+            raise EzvizError(
+                str(payload.get("msg") or (payload.get("meta") or {}).get("message") or "读取睡眠伴侣设备ID失败")
+            )
+        return str(payload["data"])
 
     async def device_info(self) -> dict[str, Any]:
         if not self.settings.ezviz_device_serial:

@@ -23,10 +23,19 @@ async def device_status(ezviz: EzvizDep, settings: SettingsDep) -> dict[str, Any
         "c6c": c6c,
         "sleep_assistant": {
             "name": settings.sleep_device_name,
-            "configured": settings.sleep_provider != "disabled",
+            "configured": ezviz.sleep_configured,
             "connection": settings.sleep_provider,
         },
     }
+
+
+@router.post("/sleep/test")
+async def test_sleep_assistant(ezviz: EzvizDep) -> dict[str, Any]:
+    try:
+        await ezviz.sleep_device_id()
+        return {"success": True, "connected": True}
+    except EzvizError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/c6c/test")

@@ -28,6 +28,9 @@ def test_live_address_uses_short_lived_hls_without_returning_credentials() -> No
 
         settings = Settings(
             ezviz_access_token="test-token",
+            ezviz_auto_token=False,
+            ezviz_app_key="",
+            ezviz_app_secret="",
             ezviz_device_serial="C6C123",
             ezviz_verify_code="ABCDEF",
         )
@@ -51,6 +54,7 @@ def test_sdk_session_keeps_app_secret_on_backend() -> None:
             ezviz_app_key="test-app-key",
             ezviz_app_secret="server-only-secret",
             ezviz_access_token="test-token",
+            ezviz_auto_token=False,
             ezviz_device_serial="C6C123",
             ezviz_channel_no=1,
             ezviz_verify_code="ABCDEF",
@@ -72,3 +76,40 @@ def test_sdk_session_keeps_app_secret_on_backend() -> None:
         assert "server-only-secret" not in result.values()
 
     asyncio.run(scenario())
+
+
+def test_sleep_device_id_uses_server_token_without_returning_identifier() -> None:
+    async def scenario() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/api/service/sleepDetector/v3/third/huayi/deviceId"
+            assert request.headers["accessToken"] == "test-token"
+            assert request.url.params["deviceCode"] == "SLEEP123"
+            return httpx.Response(200, json={"data": "internal-device-id", "meta": {"code": 200}})
+
+        settings = Settings(
+            ezviz_access_token="test-token",
+            ezviz_auto_token=False,
+            ezviz_app_key="",
+            ezviz_app_secret="",
+            sleep_provider="ezviz",
+            sleep_device_serial="SLEEP123",
+            sleep_device_id="",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            service = EzvizClient(settings, client)
+            assert await service.sleep_device_id() == "internal-device-id"
+
+    asyncio.run(scenario())
+
+
+def test_sleep_device_id_uses_configured_id_without_network_request() -> None:
+    settings = Settings(
+        sleep_provider="ezviz",
+        sleep_device_id="known-device-id",
+        ezviz_access_token="test-token",
+        ezviz_auto_token=False,
+        ezviz_app_key="",
+        ezviz_app_secret="",
+    )
+    service = EzvizClient(settings)
+    assert asyncio.run(service.sleep_device_id()) == "known-device-id"

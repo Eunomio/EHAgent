@@ -46,18 +46,28 @@ Android工程使用官方Maven依赖`io.github.ezviz-open:ezviz-sdk:5.30.2`。�
 
 ## 无感睡眠助手
 
-萤石公开产品资料确认设备可采集睡眠状态、心率、呼吸频率和离床信息。具体数据接口权限随开放平台应用和项目授权变化，因此后端提供统一接收口：
+后端保留统一的夜间摘要接收口：
 
 ```text
 POST /api/v1/ingest/sleep-summaries
 ```
 
-接入顺序：
+同时支持萤石开放平台的最小连通性检查：
 
-1. 向萤石项目联系人申请睡眠数据授权，确认回调或导出的字段、频率与时间单位。
-2. 将萤石字段映射为本项目的睡眠摘要格式。
-3. 每晚睡眠结束后发送一次摘要；若可取得时序数据，把采样点放入 `samples`。
-4. `.env` 设置 `EH_SLEEP_PROVIDER=webhook`，重启服务，手机首页即显示真实记录。
+```text
+POST /api/v1/devices/sleep/test
+```
+
+在 `.env` 中配置 `EH_SLEEP_PROVIDER=ezviz`、`EH_EZVIZ_APP_KEY`、`EH_EZVIZ_APP_SECRET`，并提供 `EH_SLEEP_DEVICE_ID` 或 `EH_SLEEP_DEVICE_SERIAL`。启用 `EH_EZVIZ_AUTO_TOKEN=true` 后，后端仅在内存中获取和缓存访问令牌；令牌、完整序列号和设备验证码不得写入 APK、文档、测试夹具或提交记录。
+
+若只配置设备序列号，适配器会通过萤石睡眠组件的设备 ID 查询接口解析内部 `deviceId`；若已知 `EH_SLEEP_DEVICE_ID`，则不发起该解析请求。当前连通性接口只验证凭证和设备 ID 路径，尚未抓取、转换或入库萤石的睡眠统计数据。
+
+后续数据接入顺序：
+
+1. 以官方睡眠体征监测组件的实际返回为准，确认字段口径、日期边界、时区、单位和数据缺失语义。
+2. 将已授权的睡眠统计映射为 `sleep-summaries`；每晚写入一次摘要，时序采样写入 `samples`。
+3. 每条记录保留 `source`、`measured_at`、质量标记与脱敏调试证据；无记录或字段缺失时标为 `insufficient`，不得补零。
+4. 在 Android 客户端展示前，分别验证设备连通、统计读取、入库与页面读取，不能以接口 200 代替非空数据验证。
 
 正式授权前，可以使用设备官方导出的真实记录联调：
 
@@ -65,7 +75,7 @@ POST /api/v1/ingest/sleep-summaries
 .\scripts\send-sleep-summary.ps1 -Backend http://127.0.0.1:8000
 ```
 
-请先把脚本中的示例值替换为设备实际导出值。公开能力参考：[萤石无感睡眠监测资料](https://icnopen.ezviz.com/cn/s/244)、[萤石睡眠产品介绍](https://www.ezviz.com/cn/news/6412.html?_cc=1)。
+请先把脚本中的示例值替换为设备实际导出值。接口依据：[睡眠体征监测组件](https://open.ys7.com/help/1850)、[睡眠伴侣 EP：离床未归时长](https://open.ys7.com/help/2059)；公开产品背景参考：[萤石无感睡眠监测资料](https://icnopen.ezviz.com/cn/s/244)。
 
 ## 手机无法连接时
 
