@@ -46,35 +46,45 @@ Android工程使用官方Maven依赖`io.github.ezviz-open:ezviz-sdk:5.30.2`。�
 
 ## 无感睡眠助手
 
-萤石公开产品资料确认设备可采集睡眠状态、心率、呼吸频率和离床信息。睡眠数据接口权限随开放平台应用和项目授权变化，Windows Agent通过独立设备序列号绑定一台无感睡眠助手，并提供正式报告接收口：
+后端保留统一的夜间摘要接收口：
 
 ```text
 POST /api/v1/ingest/sleep-reports
 ```
 
-接入顺序：
-
-1. 在设备机身标签、包装或萤石账号设备列表中找到睡眠助手的设备序列号。
-2. 向萤石项目联系人申请睡眠数据授权，确认回调字段、报告编号、时间单位和推送重试规则。
-3. 将开放接口字段映射为本项目的睡眠报告格式；每份报告必须带`device_serial`。
-4. `.env`填写：
-
-```dotenv
-EH_SLEEP_PROVIDER=ezviz_webhook
-EH_SLEEP_DEVICE_NAME=萤石无感睡眠助手
-EH_SLEEP_DEVICE_SERIAL=设备机身上的序列号
-EH_SLEEP_WEBHOOK_TOKEN=自行生成的随机长字符串
-```
-
-5. 推送程序调用接口时增加请求头：
+同时支持萤石开放平台的最小连通性检查：
 
 ```text
-X-EH-Sleep-Token: 与EH_SLEEP_WEBHOOK_TOKEN相同的内容
+POST /api/v1/devices/sleep/test
 ```
 
-6. 重启服务。`GET /api/v1/devices`中睡眠设备的`configured`应为`true`。
+在 `.env` 中配置 `EH_SLEEP_PROVIDER=ezviz`、`EH_EZVIZ_APP_KEY`、`EH_EZVIZ_APP_SECRET`，并提供 `EH_SLEEP_DEVICE_ID` 或 `EH_SLEEP_DEVICE_SERIAL`。启用 `EH_EZVIZ_AUTO_TOKEN=true` 后，后端仅在内存中获取和缓存访问令牌；令牌、完整序列号和设备验证码不得写入 APK、文档、测试夹具或提交记录。
 
-报告包含设备序列号、平台报告编号、报告日期、时区、睡眠起止时间、总睡眠时长、睡眠构成、得分、心率、呼吸频率、离床次数、数据质量、报告状态和生成时间。接口提供时序采样时放入`samples`，提供睡眠阶段区间时放入`stages`。同一设备的同一平台报告编号再次推送时更新原记录。
+若只配置设备序列号，适配器会通过萤石睡眠组件的设备 ID 查询接口解析内部 `deviceId`；若已知 `EH_SLEEP_DEVICE_ID`，则不发起该解析请求。
+
+使用下列接口同步指定日期的统计数据；未传 `target_date` 时默认同步前一天：
+
+```text
+POST /api/v1/devices/sleep/sync?target_date=YYYY-MM-DD
+```
+
+同步接口调用萤石的每日睡眠、每日心率和每日呼吸率统计，并写入既有 `sleep-summaries` 契约：
+
+| 项目契约字段 | 萤石来源 | 处理方式 |
+| --- | --- | --- |
+| `sleep_start`、`sleep_end`、`duration_minutes` | 呼吸统计的睡眠起止时间 | 使用 `EH_SLEEP_TIMESTAMP_UTC_OFFSET_HOURS` 解析，计算时长；无有效时间则同步失败。 |
+| `heart_rate`、`heart_rate_min`、`heart_rate_max` | 心率统计的均值、最小值、最大值 | 只接受 20–240 次/分。 |
+| `respiratory_rate`、`respiratory_min`、`respiratory_max` | 呼吸统计的十分钟均值、最小值、最大值 | 日均值由有效十分钟均值计算；只接受 1–80 次/分。 |
+| `samples[].at`、`samples[].heart_rate`、`samples[].respiratory_rate` | 心率分钟曲线、呼吸十分钟曲线 | 以时间戳合并，保留可用的单项或双项采样点。 |
+| `measured_at`、`source`、`quality` | 睡眠结束时间、固定来源、有效字段情况 | 结束时间为测量时间；来源为 `ezviz_sleep_assistant`；无有效心率和呼吸率时标记 `insufficient`。 |
+
+每日睡眠接口返回的睡眠评分和分期尚无当前产品契约字段，暂不入库或展示；统计组件也不提供可确认的离床次数，因此同步时 `bed_exit_count` 保持为空。萤石返回的统计时间字符串不带时区；当前设备返回的昼夜模式暂按 UTC 使用默认偏移 `0`，该项必须在厂商确认或与设备端记录核对后才能改为其他偏移。不得用清醒分期或其他字段推导离床次数、HRV 或医疗结论。
+
+后续数据接入顺序：
+
+1. 以官方睡眠体征监测组件的实际返回为准，确认字段口径、日期边界、时区、单位和数据缺失语义。
+2. 每条记录保留 `source`、`measured_at`、质量标记与脱敏调试证据；无记录或字段缺失时标为 `insufficient`，不得补零。
+3. 在 Android 客户端展示前，分别验证设备连通、统计读取、入库与页面读取，不能以接口 200 代替非空数据验证。
 
 正式授权前，可以使用设备官方导出的真实记录联调：
 
@@ -82,13 +92,7 @@ X-EH-Sleep-Token: 与EH_SLEEP_WEBHOOK_TOKEN相同的内容
 .\scripts\send-sleep-summary.ps1 -Backend http://127.0.0.1:8000
 ```
 
-请先把脚本中的示例设备序列号、报告编号和数值替换为设备实际数据。如果配置了接收凭证，运行：
-
-```powershell
-.\scripts\send-sleep-summary.ps1 -Backend http://127.0.0.1:8000 -Token "你的接收凭证"
-```
-
-当前公开文档没有给出通用睡眠报告REST路径。取得比赛账号的获批接口文档后，在萤石回调或同步程序中完成一次字段映射即可，住户页面、数据库和分析模块无需再调整。公开能力参考：[萤石无感睡眠监测资料](https://icnopen.ezviz.com/cn/s/244)、[萤石睡眠产品介绍](https://www.ezviz.com/cn/news/6412.html?_cc=1)。
+请先把脚本中的示例值替换为设备实际导出值。接口依据：[睡眠体征监测组件](https://open.ys7.com/help/1850)、[睡眠伴侣 EP：离床未归时长](https://open.ys7.com/help/2059)；公开产品背景参考：[萤石无感睡眠监测资料](https://icnopen.ezviz.com/cn/s/244)。
 
 ## 手机无法连接时
 

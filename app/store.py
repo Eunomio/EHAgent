@@ -231,6 +231,10 @@ class ProductStore:
                 ).fetchone()
                 existing_id = row["id"] if row else None
             record = {**payload, "id": existing_id or payload.get("id") or str(uuid4())}
+            record["data_status"] = payload.get("data_status") or "final"
+            record["report_date"] = payload.get("report_date") or str(
+                payload.get("sleep_end", "")
+            )[:10]
             record["samples_json"] = json.dumps(payload.get("samples", []), ensure_ascii=False)
             record["stages_json"] = json.dumps(payload.get("stages", []), ensure_ascii=False)
             record["received_at"] = now_iso()

@@ -19,7 +19,11 @@ class SleepService:
     @property
     def configured(self) -> bool:
         provider = self.settings.sleep_provider
-        if provider in {"webhook", "ezviz_webhook"}:
+        if provider == "ezviz":
+            return bool(
+                self.settings.sleep_device_serial or self.settings.sleep_device_id
+            )
+        if provider == "webhook":
             return bool(self.settings.sleep_device_serial)
         return provider == "authorized_export"
 

@@ -16,8 +16,9 @@
 | C6c 抓图 | `POST /api/v1/devices/c6c/capture` |
 | 获取C6c临时HLS直播地址 | `POST /api/v1/devices/c6c/live` |
 | 获取C6c安卓SDK播放会话 | `POST /api/v1/devices/c6c/sdk-session` |
-| 接收正式睡眠报告 | `POST /api/v1/ingest/sleep-reports` |
-| 兼容旧睡眠摘要地址 | `POST /api/v1/ingest/sleep-summaries` |
+| 睡眠伴侣连通测试 | `POST /api/v1/devices/sleep/test` |
+| 同步萤石单日睡眠摘要 | `POST /api/v1/devices/sleep/sync?target_date=YYYY-MM-DD` |
+| 接收睡眠摘要 | `POST /api/v1/ingest/sleep-summaries` |
 | 接收模型判断 | `POST /api/v1/ingest/safety-results` |
 | 上传训练图片 | `POST /api/v1/ingest/vision-samples` |
 | 提交老人反馈 | `POST /api/v1/resident/feedback` |

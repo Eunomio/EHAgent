@@ -52,22 +52,21 @@ def configured_client(tmp_path: Path) -> TestClient:
     settings = Settings(
         database_path=tmp_path / "sleep.db",
         evidence_root=tmp_path / "evidence",
-        sleep_provider="ezviz_webhook",
+        sleep_provider="ezviz",
         sleep_device_serial="SLEEP001",
-        sleep_webhook_token="secret-token",
+        sleep_device_id="known-device-id",
+        ezviz_access_token="test-token",
     )
     return TestClient(create_app(settings))
 
 
-def test_sleep_device_requires_token_and_matching_serial(tmp_path: Path) -> None:
+def test_sleep_device_requires_matching_serial(tmp_path: Path) -> None:
     with configured_client(tmp_path) as client:
-        assert client.post("/api/v1/ingest/sleep-reports", json=sleep_report()).status_code == 401
-        headers = {"X-EH-Sleep-Token": "secret-token"}
         assert client.post(
-            "/api/v1/ingest/sleep-reports", json=sleep_report("OTHER"), headers=headers
+            "/api/v1/ingest/sleep-reports", json=sleep_report("OTHER")
         ).status_code == 409
         response = client.post(
-            "/api/v1/ingest/sleep-reports", json=sleep_report(), headers=headers
+            "/api/v1/ingest/sleep-reports", json=sleep_report()
         )
         assert response.status_code == 200
         assert response.json()["device_serial"] == "SLEEP001"
@@ -77,17 +76,15 @@ def test_sleep_device_status_reflects_real_configuration(tmp_path: Path) -> None
     with configured_client(tmp_path) as client:
         before = client.get("/api/v1/devices").json()["sleep_assistant"]
         assert before["configured"] is True
-        assert before["serial_configured"] is True
-        assert before["last_report_at"] is None
+        assert before["connection"] == "ezviz"
 
         client.post(
             "/api/v1/ingest/sleep-reports",
             json=sleep_report(),
-            headers={"X-EH-Sleep-Token": "secret-token"},
         )
-        after = client.get("/api/v1/devices").json()["sleep_assistant"]
-        assert after["last_report_at"] == "2026-08-17T06:15:00+08:00"
-        assert after["last_data_status"] == "final"
+        latest = client.get("/api/v1/resident/sleep").json()["latest"]
+        assert latest["measured_at"] == "2026-08-17T06:15:00+08:00"
+        assert latest["data_status"] == "final"
 
 
 def test_ezviz_report_requires_device_serial(client: TestClient) -> None:

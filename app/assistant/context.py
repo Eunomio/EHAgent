@@ -52,7 +52,14 @@ class ResidentContextBuilder:
             "sleep_device_configured": (
                 self.settings.sleep_provider == "authorized_export"
                 or (
-                    self.settings.sleep_provider in {"webhook", "ezviz_webhook"}
+                    self.settings.sleep_provider == "ezviz"
+                    and bool(
+                        self.settings.sleep_device_serial
+                        or self.settings.sleep_device_id
+                    )
+                )
+                or (
+                    self.settings.sleep_provider == "webhook"
                     and bool(self.settings.sleep_device_serial)
                 )
             ),

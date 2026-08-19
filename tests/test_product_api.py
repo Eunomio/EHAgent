@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi.testclient import TestClient
 
 
@@ -33,28 +35,27 @@ def test_sleep_summary_keeps_vitals(client: TestClient) -> None:
     assert "62" in analysis["content"]["summary"]
 
 
-def test_sleep_report_is_updated_by_external_identity(client: TestClient) -> None:
-    payload = {
-        "external_report_id": "report-one",
-        "device_serial": "SLEEP001",
-        "sleep_start": "2026-08-12T23:00:00+08:00",
-        "sleep_end": "2026-08-13T06:00:00+08:00",
-        "duration_minutes": 400,
-        "heart_rate": 61,
-        "quality": "usable",
-        "data_status": "preliminary",
-        "source": "ezviz_sleep_assistant",
-        "measured_at": "2026-08-13T06:05:00+08:00",
-    }
-    first = client.post("/api/v1/ingest/sleep-reports", json=payload).json()
-    payload.update({"duration_minutes": 410, "data_status": "final"})
-    second = client.post("/api/v1/ingest/sleep-reports", json=payload).json()
+def test_sleep_sync_persists_the_ezviz_contract(client: TestClient) -> None:
+    requested: list[date] = []
 
-    assert second["id"] == first["id"]
-    history = client.get("/api/v1/resident/sleep").json()["history"]
-    assert len(history) == 1
-    assert history[0]["duration_minutes"] == 410
-    assert history[0]["data_status"] == "final"
+    async def summary_for_date(target_date: date) -> dict[str, object]:
+        requested.append(target_date)
+        return {
+            "id": "ezviz-sleep-test", "sleep_start": "2026-08-12T22:30:00+08:00",
+            "sleep_end": "2026-08-13T06:21:00+08:00", "duration_minutes": 471,
+            "respiratory_rate": 15.0, "heart_rate": 62.0, "respiratory_min": 11.0,
+            "respiratory_max": 18.0, "heart_rate_min": 50.0, "heart_rate_max": 82.0,
+            "bed_exit_count": None, "quality": "usable", "source": "ezviz_sleep_assistant",
+            "measured_at": "2026-08-13T06:21:00+08:00", "samples": [],
+        }
+
+    client.app.state.ezviz.sleep_summary_for_date = summary_for_date
+    response = client.post("/api/v1/devices/sleep/sync?target_date=2026-08-13")
+    assert response.status_code == 200
+    assert requested == [date(2026, 8, 13)]
+    assert response.json()["sleep"]["heart_rate"] == 62.0
+    latest = client.get("/api/v1/resident/sleep").json()["latest"]
+    assert latest["respiratory_rate"] == 15.0
 
 
 def test_safety_task_and_action(client: TestClient) -> None:

@@ -20,13 +20,15 @@ class Settings(BaseSettings):
     ezviz_app_key: str = ""
     ezviz_app_secret: str = ""
     ezviz_access_token: str = ""
+    ezviz_auto_token: bool = False
     ezviz_device_serial: str = ""
     ezviz_channel_no: int = Field(default=1, ge=1)
     ezviz_verify_code: str = ""
     sleep_provider: str = "disabled"
     sleep_device_name: str = "萤石无感睡眠伴侣"
     sleep_device_serial: str = ""
-    sleep_webhook_token: str = ""
+    sleep_device_id: str = ""
+    sleep_timestamp_utc_offset_hours: int = Field(default=0, ge=-12, le=14)
     safety_area_name: str = "卧室外走道"
     llm_enabled: bool = False
     llm_provider: str = "openai"

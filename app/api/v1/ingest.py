@@ -1,10 +1,9 @@
 import json
-import secrets
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.dependencies import LlmDep, SettingsDep, SleepDep, StoreDep
@@ -24,19 +23,10 @@ class SafetyResultIn(BaseModel):
     evidence_url: str | None = None
 
 
-def authorize_sleep_report(settings: SettingsDep, token: str | None) -> None:
-    expected = settings.sleep_webhook_token
-    if expected and (token is None or not secrets.compare_digest(token, expected)):
-        raise HTTPException(401, "睡眠数据接收凭证不正确")
-
-
 async def save_sleep_report(
     payload: SleepReportIn,
     sleep: SleepDep,
-    settings: SettingsDep,
-    token: str | None,
 ) -> dict[str, Any]:
-    authorize_sleep_report(settings, token)
     try:
         return await sleep.ingest(payload)
     except SleepDeviceMismatch as exc:
@@ -47,20 +37,16 @@ async def save_sleep_report(
 async def ingest_sleep(
     payload: SleepReportIn,
     sleep: SleepDep,
-    settings: SettingsDep,
-    x_eh_sleep_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    return await save_sleep_report(payload, sleep, settings, x_eh_sleep_token)
+    return await save_sleep_report(payload, sleep)
 
 
 @router.post("/sleep-summaries", deprecated=True)
 async def ingest_sleep_summary(
     payload: SleepReportIn,
     sleep: SleepDep,
-    settings: SettingsDep,
-    x_eh_sleep_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    return await save_sleep_report(payload, sleep, settings, x_eh_sleep_token)
+    return await save_sleep_report(payload, sleep)
 
 
 @router.post("/safety-results")

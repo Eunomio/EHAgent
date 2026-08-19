@@ -1,8 +1,9 @@
+from datetime import date, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app.dependencies import EzvizDep, SettingsDep, SleepDep, StoreDep
+from app.dependencies import EzvizDep, LlmDep, SettingsDep, StoreDep
 from app.devices.ezviz import EzvizError
 
 router = APIRouter(prefix="/devices", tags=["devices"])
@@ -10,7 +11,7 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 @router.get("")
 async def device_status(
-    ezviz: EzvizDep, settings: SettingsDep, sleep: SleepDep
+    ezviz: EzvizDep, settings: SettingsDep
 ) -> dict[str, Any]:
     c6c: dict[str, Any] = {
         "name": "萤石C6c", "configured": ezviz.configured, "online": None
@@ -23,8 +24,44 @@ async def device_status(
             c6c["error"] = str(exc)
     return {
         "c6c": c6c,
-        "sleep_assistant": sleep.status(),
+        "sleep_assistant": {
+            "name": settings.sleep_device_name,
+            "configured": ezviz.sleep_configured,
+            "connection": settings.sleep_provider,
+        },
     }
+
+
+@router.post("/sleep/test")
+async def test_sleep_assistant(ezviz: EzvizDep) -> dict[str, Any]:
+    try:
+        await ezviz.sleep_device_id()
+        return {"success": True, "connected": True}
+    except EzvizError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/sleep/sync")
+async def sync_sleep_assistant(
+    ezviz: EzvizDep,
+    store: StoreDep,
+    llm: LlmDep,
+    target_date: date | None = None,
+) -> dict[str, Any]:
+    """Fetch one EZVIZ sleep day and persist it through the product contract."""
+
+    try:
+        summary = await ezviz.sleep_summary_for_date(
+            target_date or date.today() - timedelta(days=1)
+        )
+    except EzvizError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    record = store.add_sleep(summary)
+    copy, source = await llm.analyze_sleep(record, store.sleep_history(7))
+    analysis = store.add_llm_output(
+        "sleep", record["id"], copy.model_dump(), source, llm.model_name
+    )
+    return {"success": True, "sleep": record, "analysis": analysis}
 
 
 @router.post("/c6c/test")
