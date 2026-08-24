@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     llm_api_base: str = "https://api.openai.com/v1"
     llm_timeout_seconds: float = Field(default=15, ge=1, le=60)
     llm_max_output_tokens: int = Field(default=500, ge=100, le=2000)
+    vlm_enabled: bool | None = None
+    vlm_api_key: str = ""
+    vlm_model: str = ""
+    vlm_api_base: str = ""
+    vlm_timeout_seconds: float = Field(default=60, ge=5, le=120)
+    vlm_auto_check_enabled: bool = True
+    vlm_change_poll_seconds: float = Field(default=6, ge=5, le=300)
+    vlm_change_threshold: float = Field(default=0.025, ge=0.005, le=0.5)
+    vlm_change_confirmations: int = Field(default=2, ge=1, le=5)
+    vlm_change_cooldown_seconds: float = Field(default=30, ge=10, le=600)
     assistant_web_search_enabled: bool = True
     assistant_location: str = ""
 

@@ -1,5 +1,7 @@
 # 基础模型、数据与上传方法
 
+视觉大模型安全程度判断采用图片级语义标注，完整字段、风险等级、障碍物属性和复核方法见 [居家走道视觉大模型数据标注规范](VLM_SAFETY_ANNOTATION_GUIDE.md)。
+
 ## 第一版只训练通道障碍物检测
 
 建议从轻量目标检测模型开始，例如 `RTMDet-tiny`，输出 ONNX 后部署到家中电脑。它能在普通电脑上运行，标注方式清楚，开发量可控。第一版无需训练跌倒识别、情绪判断或医疗判断模型。
@@ -42,6 +44,23 @@
 达到这些指标后再逐步扩充更多家庭和物品。比赛阶段可把“跌倒风险”聚焦为可干预的环境风险，实施成本更低。
 
 ## 图片和标注如何发给后端
+
+### 使用 C6c 批量采集原图
+
+独立采集脚本直接调用萤石抓图能力并下载图片，不会新增产品安全待办。先在 `.env` 中配置 C6c，随后在仓库根目录运行：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\collect-c6c.py `
+  --count 20 `
+  --interval-seconds 30 `
+  --camera-id c6c01 `
+  --lighting day `
+  --scene clear
+```
+
+图片保存在 `evidence/c6c-collection/<camera-id>/`，命名格式为
+`<camera-id>_<lighting>_<scene>_<时间戳>.jpg`。同目录的 `metadata.csv` 记录文件名、采集时间、
+摄像头、光线、场景、文件大小和标注内容；新图片的标注内容为空。批量采集间隔不得低于 5 秒。
 
 图片作为请求正文发送，`annotation` 使用 URL 编码后的 JSON 查询参数，坐标为图片像素：
 

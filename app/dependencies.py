@@ -8,6 +8,7 @@ from app.devices.ezviz import EzvizClient
 from app.llm.service import LlmService
 from app.sleep.service import SleepService
 from app.store import ProductStore
+from app.vision.service import VisionSafetyService
 
 
 def get_store(request: Request) -> ProductStore:
@@ -34,9 +35,14 @@ def get_sleep(request: Request) -> SleepService:
     return cast(SleepService, request.app.state.sleep)
 
 
+def get_vision_safety(request: Request) -> VisionSafetyService:
+    return cast(VisionSafetyService, request.app.state.vision_safety)
+
+
 StoreDep = Annotated[ProductStore, Depends(get_store)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 EzvizDep = Annotated[EzvizClient, Depends(get_ezviz)]
 LlmDep = Annotated[LlmService, Depends(get_llm)]
 AssistantDep = Annotated[AssistantService, Depends(get_assistant)]
 SleepDep = Annotated[SleepService, Depends(get_sleep)]
+VisionSafetyDep = Annotated[VisionSafetyService, Depends(get_vision_safety)]

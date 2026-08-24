@@ -1,5 +1,6 @@
 .env
 .venv/
+.venv-rtmdet/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -13,4 +14,5 @@ android/app/build/
 android/build/
 *.jks
 *.keystore
+models/pretrained/*.pth
 

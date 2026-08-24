@@ -154,7 +154,7 @@ class ProductStore:
     def recent_checks(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._connect() as db:
             return [dict(r) for r in db.execute(
-                "SELECT * FROM safety_check ORDER BY occurred_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM safety_check ORDER BY occurred_at DESC,rowid DESC LIMIT ?", (limit,)
             )]
 
     def add_safety_check(
@@ -213,11 +213,35 @@ class ProductStore:
             self.create_help_request("safety", f"需要帮忙处理：{row['location']}的{row['title']}")
         return dict(row) if row else None
 
+    def update_safety_task(
+        self,
+        task_id: str,
+        title: str,
+        explanation: str,
+        suggestion: str,
+        status: str = "open",
+    ) -> dict[str, Any] | None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE safety_task SET title=?,explanation=?,suggestion=?,status=?,updated_at=? "
+                "WHERE id=?",
+                (title, explanation, suggestion, status, now_iso(), task_id),
+            )
+            row = db.execute("SELECT * FROM safety_task WHERE id=?", (task_id,)).fetchone()
+        return dict(row) if row else None
+
     def resolve_pending_task(self) -> None:
         with self._connect() as db:
             db.execute(
                 "UPDATE safety_task SET status='resolved',updated_at=? WHERE status='rescan_pending'",
                 (now_iso(),),
+            )
+
+    def resolve_safety_task(self, task_id: str) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE safety_task SET status='resolved',updated_at=? WHERE id=?",
+                (now_iso(), task_id),
             )
 
     def add_sleep(self, payload: dict[str, Any]) -> dict[str, Any]:

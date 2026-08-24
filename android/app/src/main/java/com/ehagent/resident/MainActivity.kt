@@ -1,14 +1,20 @@
 package com.ehagent.resident
 
 import android.os.Bundle
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.content.Intent
 import android.net.Uri
 import android.app.Application
 import android.view.SurfaceView
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -22,17 +28,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 internal val Brand = Color(0xFF2E7D67)
 internal val BrandSoft = Color(0xFFE4F3ED)
@@ -69,6 +86,12 @@ private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.
     val state by viewModel.state.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf(Page.HOME) }
     val mainPages = remember { listOf(Page.HOME, Page.SAFETY, Page.SLEEP, Page.ME) }
+    LaunchedEffect(viewModel) {
+        while (isActive) {
+            delay(5_000)
+            viewModel.refreshSafetyStatus()
+        }
+    }
     Scaffold(
         containerColor = Canvas,
         bottomBar = {
@@ -213,21 +236,148 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
     PageBody {
         PageTitle("居家安全", "留意每天常走的地方", Icons.Rounded.HealthAndSafety)
         CameraStreamCard(state, vm)
+        SafetyCheckCard(state, vm)
         if (state.dashboard.safety.taskId == null) {
             EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
         } else {
             Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = WarmSoft)) {
                 Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("请留意", color = Color(0xFF9A5B12), fontWeight = FontWeight.Bold)
+                    Text(
+                        if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
+                        color = Color(0xFF9A5B12),
+                        fontWeight = FontWeight.Bold,
+                    )
                     Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
                     Text(state.dashboard.safety.detail, fontSize = 18.sp, lineHeight = 28.sp)
-                    Button(onClick = { vm.taskAction("done") }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Rounded.Done, null); Spacer(Modifier.width(8.dp)); Text("我已整理好", fontSize = 18.sp) }
-                    OutlinedButton(onClick = { vm.taskAction("need_help"); dial(context, state.dashboard.contactPhone) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(16.dp)) { Text("联系家人", fontSize = 18.sp) }
-                    TextButton(onClick = { vm.taskAction("later") }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("稍后提醒我") }
+                    Button(
+                        onClick = vm::confirmSafetyCleaned,
+                        enabled = !state.safetyAnalysisLoading && state.safetyBaseline.ready &&
+                            !state.safetyBaselineNeedsRefresh && !state.cameraPaused,
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        if (state.safetyAnalysisLoading) {
+                            CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(9.dp))
+                            Text("正在重新检查…", fontSize = 18.sp)
+                        } else {
+                            Icon(Icons.Rounded.Done, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("我已整理好", fontSize = 18.sp)
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { vm.taskAction("need_help"); dial(context, state.dashboard.contactPhone) },
+                        enabled = !state.safetyAnalysisLoading,
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        shape = RoundedCornerShape(16.dp),
+                    ) { Text("联系家人", fontSize = 18.sp) }
+                    TextButton(
+                        onClick = { vm.taskAction("later") },
+                        enabled = !state.safetyAnalysisLoading,
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                    ) { Text("稍后提醒我") }
                 }
             }
         }
+        BaselineCard(
+            baseline = state.safetyBaseline,
+            needsRefresh = state.safetyBaselineNeedsRefresh,
+            saving = state.baselineSaving,
+            error = state.baselineError,
+            canRetry = !state.cameraPaused && state.devices.cameraConfigured,
+            onRetry = { vm.saveSafetyBaseline() },
+        )
         SettingsSwitch("暂停通道检查", "需要隐私时可以随时暂停", state.cameraPaused, vm::setCameraPaused)
+    }
+}
+
+@Composable
+private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
+    val result = state.safetyAnalysis
+    val resultColor = when (result?.riskLevel) {
+        "high", "medium" -> WarmSoft
+        "low" -> Color(0xFFFFF7E7)
+        else -> BrandSoft
+    }
+    Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = resultColor)) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RoundIcon(Icons.Rounded.Search, if (result?.riskLevel in setOf("high", "medium")) Warm else Brand)
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("检查当前通道", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            state.safetyBaselineNeedsRefresh -> "摄像头角度变化较大，正在重新识别通道"
+                            state.safetyBaseline.ready -> "自动监测中，画面持续变化后会检查"
+                            else -> "正在自动识别通道"
+                        },
+                        color = Muted,
+                    )
+                }
+            }
+            result?.let {
+                HorizontalDivider(color = Ink.copy(alpha = .08f))
+                Text(it.headline, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                Text(it.reason, fontSize = 17.sp, lineHeight = 25.sp)
+                Text(it.actionText, color = Brand, fontWeight = FontWeight.SemiBold)
+                Text("检查时间 ${shortDateTime(it.checkedAt)}", color = Muted, fontSize = 14.sp)
+            }
+            state.safetyAnalysisError?.let { Text(it, color = Color(0xFFB44336)) }
+            Button(
+                onClick = vm::analyzeSafety,
+                enabled = state.safetyBaseline.ready && !state.safetyBaselineNeedsRefresh &&
+                    !state.safetyAnalysisLoading && !state.cameraPaused,
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                if (state.safetyAnalysisLoading) {
+                    CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(9.dp))
+                    Text("正在检查…", fontSize = 18.sp)
+                } else {
+                    Icon(Icons.Rounded.CameraAlt, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("立即检查通道", fontSize = 18.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BaselineCard(
+    baseline: SafetyBaselineStatus,
+    needsRefresh: Boolean,
+    saving: Boolean,
+    error: String?,
+    canRetry: Boolean,
+    onRetry: () -> Unit,
+) {
+    Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            RoundIcon(Icons.Rounded.AddAPhoto, Brand, BrandSoft)
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Text("通道识别", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    when {
+                        saving -> "正在识别当前通道…"
+                        error != null -> "暂时无法识别，请整理出安全通道后重试"
+                        needsRefresh -> "摄像头角度变化较大，正在重新识别"
+                        baseline.ready -> "已自动识别${baseline.capturedAt?.let { " · ${shortDateTime(it)}" }.orEmpty()}"
+                        else -> "正在自动识别通道"
+                    },
+                    color = Muted,
+                    lineHeight = 22.sp,
+                )
+                error?.let { Text(it, color = Color(0xFFB44336), fontSize = 14.sp, lineHeight = 20.sp) }
+            }
+            TextButton(onClick = onRetry, enabled = canRetry && !saving) {
+                Text(if (baseline.ready) "重新识别" else "立即识别")
+            }
+        }
     }
 }
 
@@ -265,7 +415,7 @@ private fun CameraStreamCard(state: UiState, vm: MainViewModel) {
                     Spacer(Modifier.width(12.dp))
                     Text("正在打开画面…", fontSize = 17.sp)
                 }
-                state.cameraSession != null -> CameraPlayer(state.cameraSession)
+                state.cameraSession != null -> CameraPlayer(state.cameraSession, vm, state.cameraMoveError)
                 else -> {
                     state.cameraStreamError?.let {
                         Text(it, color = Color(0xFFB44336), lineHeight = 24.sp)
@@ -299,11 +449,12 @@ private fun CameraMessage(title: String, detail: String) {
 }
 
 @Composable
-private fun CameraPlayer(session: CameraSdkSession) {
+private fun CameraPlayer(session: CameraSdkSession, vm: MainViewModel, moveError: String?) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var playbackState by remember(session) { mutableStateOf(EzvizPlaybackState.CONNECTING) }
     var playbackError by remember(session) { mutableStateOf<String?>(null) }
+    var fullscreen by remember(session) { mutableStateOf(false) }
     val controller = remember(session) {
         EzvizPlayerController(
             application = context.applicationContext as Application,
@@ -330,28 +481,167 @@ private fun CameraPlayer(session: CameraSdkSession) {
             controller.release()
         }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(
-            Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)).background(Color.Black),
-            contentAlignment = Alignment.Center,
-        ) {
-            AndroidView(
-                factory = { viewContext ->
-                    SurfaceView(viewContext).apply {
-                        keepScreenOn = true
-                        holder.addCallback(controller)
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-            if (playbackState == EzvizPlaybackState.CONNECTING) {
-                CircularProgressIndicator(color = Color.White)
-            }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (!fullscreen) {
+            CameraViewport(controller, playbackState, Modifier.fillMaxWidth().aspectRatio(16f / 9f), onFullscreen = { fullscreen = true })
         }
+        CameraMoveHandle(onMove = vm::setCameraMoving)
         Text("实时画面默认静音，离开本页后自动关闭", color = Muted, fontSize = 14.sp)
         playbackError?.let { Text(it, color = Color(0xFFB44336)) }
+        moveError?.let { Text(it, color = Color(0xFFB44336)) }
+    }
+    if (fullscreen) {
+        FullscreenCamera(
+            controller = controller,
+            playbackState = playbackState,
+            moveError = moveError,
+            onMove = vm::setCameraMoving,
+            onClose = { fullscreen = false },
+        )
     }
 }
+
+@Composable
+private fun CameraViewport(
+    controller: EzvizPlayerController,
+    playbackState: EzvizPlaybackState,
+    modifier: Modifier,
+    onFullscreen: (() -> Unit)? = null,
+    fullscreen: Boolean = false,
+) {
+    Box(
+        modifier.clip(if (fullscreen) RectangleShape else RoundedCornerShape(18.dp)).background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        AndroidView(
+            factory = { viewContext ->
+                SurfaceView(viewContext).apply {
+                    keepScreenOn = true
+                    holder.addCallback(controller)
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (playbackState == EzvizPlaybackState.CONNECTING) CircularProgressIndicator(color = Color.White)
+        onFullscreen?.let {
+            FilledIconButton(
+                onClick = it,
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(alpha = .58f), contentColor = Color.White),
+            ) { Icon(Icons.Rounded.Fullscreen, "全屏查看") }
+        }
+    }
+}
+
+@Composable
+private fun CameraMoveHandle(
+    onMove: (CameraDirection, Boolean) -> Unit,
+    dark: Boolean = false,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+) {
+    val labelColor = if (dark) Color.White.copy(alpha = .78f) else Muted
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Spacer(Modifier.height(7.dp))
+        DirectionButton(Icons.Rounded.KeyboardArrowUp, "向上移动", CameraDirection.UP, onMove, dark)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            DirectionButton(Icons.Rounded.KeyboardArrowLeft, "向左移动", CameraDirection.LEFT, onMove, dark)
+            Surface(Modifier.size(48.dp).padding(13.dp), shape = CircleShape, color = if (dark) Color.White.copy(alpha = .28f) else Brand.copy(alpha = .22f)) {}
+            DirectionButton(Icons.Rounded.KeyboardArrowRight, "向右移动", CameraDirection.RIGHT, onMove, dark)
+        }
+        DirectionButton(Icons.Rounded.KeyboardArrowDown, "向下移动", CameraDirection.DOWN, onMove, dark)
+    }
+}
+
+@Composable
+private fun DirectionButton(
+    icon: ImageVector,
+    description: String,
+    direction: CameraDirection,
+    onMove: (CameraDirection, Boolean) -> Unit,
+    dark: Boolean,
+) {
+    Surface(
+        modifier = Modifier.size(48.dp).pointerInput(direction) {
+            detectTapGestures(onPress = {
+                onMove(direction, true)
+                try {
+                    tryAwaitRelease()
+                } finally {
+                    onMove(direction, false)
+                }
+            })
+        },
+        shape = CircleShape,
+        color = if (dark) Color.White.copy(alpha = .2f) else BrandSoft,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, description, tint = if (dark) Color.White else Brand, modifier = Modifier.size(30.dp))
+        }
+    }
+}
+
+@Composable
+private fun FullscreenCamera(
+    controller: EzvizPlayerController,
+    playbackState: EzvizPlaybackState,
+    moveError: String?,
+    onMove: (CameraDirection, Boolean) -> Unit,
+    onClose: () -> Unit,
+) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        val context = LocalContext.current
+        val view = LocalView.current
+        val activity = remember(context) { context.findActivity() }
+        DisposableEffect(activity) {
+            val previousOrientation = activity?.requestedOrientation
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            onDispose {
+                if (previousOrientation != null) activity.requestedOrientation = previousOrientation
+            }
+        }
+        DisposableEffect(view) {
+            val window = (view.parent as DialogWindowProvider).window
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            WindowInsetsControllerCompat(window, view).hide(WindowInsetsCompat.Type.systemBars())
+            onDispose { WindowInsetsControllerCompat(window, view).show(WindowInsetsCompat.Type.systemBars()) }
+        }
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            CameraViewport(
+                controller,
+                playbackState,
+                Modifier.fillMaxSize(),
+                fullscreen = true,
+            )
+            FilledIconButton(
+                onClick = onClose,
+                modifier = Modifier.align(Alignment.TopEnd).padding(18.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(alpha = .58f), contentColor = Color.White),
+            ) { Icon(Icons.Rounded.FullscreenExit, "退出全屏") }
+            Column(
+                Modifier.align(Alignment.BottomEnd).padding(end = 28.dp, bottom = 22.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                CameraMoveHandle(onMove, dark = true, modifier = Modifier.width(152.dp))
+                moveError?.let {
+                    Text(
+                        it,
+                        color = Color(0xFFFFB4AB),
+                        modifier = Modifier.widthIn(max = 230.dp).padding(top = 6.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private fun shortDateTime(value: String): String = value.replace('T', ' ').take(16)
 
 @Composable
 private fun SleepPage(state: UiState, vm: MainViewModel) {
@@ -471,7 +761,7 @@ private fun MePage(state: UiState, vm: MainViewModel) {
 @Composable private fun SettingsSwitch(title: String, detail: String, checked: Boolean, onChecked: (Boolean) -> Unit) { Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold); Text(detail, color = Muted) }; Switch(checked, onChecked, colors = SwitchDefaults.colors(checkedTrackColor = Brand)) } } }
 @Composable private fun ConnectionBanner(text: String) { Surface(color = Color(0xFFFFE5E1), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.WifiOff, null, tint = Color(0xFFB44336)); Spacer(Modifier.width(10.dp)); Text(text, color = Color(0xFF7D2E25)) } } }
 @Composable private fun NoticeBanner(text: String) { Surface(color = BrandSoft, shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.CheckCircle, null, tint = Brand); Spacer(Modifier.width(10.dp)); Text(text, color = Color(0xFF205B4B)) } } }
-private fun deviceText(configured: Boolean, online: Boolean?): String = when { !configured -> "等待连接"; online == true -> "在线"; online == false -> "离线"; else -> "已配置" }
+private fun deviceText(configured: Boolean, online: Boolean?): String = when { !configured -> "等待连接"; online == true -> "已连接"; online == false -> "离线"; else -> "已配置" }
 private fun formatOne(value: Double): String = if (value % 1.0 == 0.0) value.toInt().toString() else String.format("%.1f", value)
 private fun formatMinutes(minutes: Int): String =
     if (minutes >= 60) "${minutes / 60}小时${minutes % 60}分钟" else "${minutes}分钟"

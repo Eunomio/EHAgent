@@ -1,10 +1,13 @@
 from datetime import date, timedelta
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.dependencies import EzvizDep, LlmDep, SettingsDep, StoreDep
+from app.dependencies import EzvizDep, LlmDep, SettingsDep, StoreDep, VisionSafetyDep
 from app.devices.ezviz import EzvizError
+from app.vision.service import BaselineMissingError, UnsafeBaselineError, VisionSafetyError
+from app.vision.workflow import record_safety_result
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -105,3 +108,80 @@ async def c6c_sdk_session(ezviz: EzvizDep, store: StoreDep) -> dict[str, Any]:
     except EzvizError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"success": True, **session}
+
+
+@router.get("/c6c/safety/baseline")
+def c6c_safety_baseline(vision: VisionSafetyDep) -> dict[str, Any]:
+    return vision.baseline_status()
+
+
+@router.post("/c6c/safety/baseline")
+async def set_c6c_safety_baseline(
+    ezviz: EzvizDep, store: StoreDep, vision: VisionSafetyDep
+) -> dict[str, Any]:
+    if store.settings().get("camera_paused") == "true":
+        raise HTTPException(409, "摄像头已暂停，请先恢复检查")
+    try:
+        return await vision.set_baseline(ezviz)
+    except UnsafeBaselineError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except EzvizError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except (httpx.HTTPError, VisionSafetyError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.post("/c6c/safety/baseline/invalidate")
+def invalidate_c6c_safety_baseline(vision: VisionSafetyDep) -> dict[str, Any]:
+    return vision.invalidate_baseline()
+
+
+@router.get("/c6c/safety/latest")
+def latest_c6c_safety(store: StoreDep) -> dict[str, Any]:
+    checks = store.recent_checks(1)
+    if not checks:
+        return {"analysis": None}
+    check = checks[0]
+    risk_level = check["result"]
+    copy = {
+        "clear": ("通道畅通", "保持通道整洁"),
+        "low": ("通道可以通行", "保持观察即可"),
+        "medium": ("通道需要整理", "请将影响通行的物品移到通道外"),
+        "high": ("通道通行受阻", "请尽快清理通道"),
+        "insufficient": ("暂时看不清通道", "请调整光线后重新检查"),
+    }.get(risk_level, ("等待下一次检查", ""))
+    task = store.latest_task()
+    headline, action_text = copy
+    if task and risk_level in {"medium", "high"}:
+        headline = task["title"]
+        action_text = task["suggestion"]
+    return {
+        "analysis": {
+            "risk_level": risk_level,
+            "headline": headline,
+            "action_text": action_text,
+            "reason": check["detail"],
+            "checked_at": check["occurred_at"],
+        }
+    }
+
+
+@router.post("/c6c/safety/analyze")
+async def analyze_c6c_safety(
+    ezviz: EzvizDep,
+    store: StoreDep,
+    settings: SettingsDep,
+    vision: VisionSafetyDep,
+) -> dict[str, Any]:
+    if store.settings().get("camera_paused") == "true":
+        raise HTTPException(409, "摄像头已暂停，请先恢复检查")
+    try:
+        result = await vision.analyze(ezviz)
+    except BaselineMissingError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except EzvizError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except VisionSafetyError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    return record_safety_result(store, settings, result)

@@ -1,7 +1,8 @@
 """EHAgent local product API."""
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -16,6 +17,8 @@ from app.devices.ezviz import EzvizClient
 from app.llm.service import LlmService
 from app.sleep.service import SleepService
 from app.store import ProductStore
+from app.vision.monitor import VisionChangeMonitor
+from app.vision.service import VisionSafetyService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -30,12 +33,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     llm = LlmService(resolved)
     assistant = AssistantService(store, llm, resolved)
     sleep = SleepService(store, llm, resolved)
+    vision_safety = VisionSafetyService(resolved)
+    vision_monitor = VisionChangeMonitor(resolved, ezviz, vision_safety, store)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        monitor_task = asyncio.create_task(vision_monitor.run())
         yield
+        monitor_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await monitor_task
         await ezviz.close()
         await llm.close()
+        await vision_safety.close()
 
     app = FastAPI(
         title=resolved.app_name,
@@ -49,6 +59,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.llm = llm
     app.state.assistant = assistant
     app.state.sleep = sleep
+    app.state.vision_safety = vision_safety
+    app.state.vision_monitor = vision_monitor
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

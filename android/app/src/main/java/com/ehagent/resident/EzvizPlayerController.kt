@@ -6,6 +6,8 @@ import android.os.Looper
 import android.view.SurfaceHolder
 import com.videogo.errorlayer.ErrorInfo
 import com.videogo.openapi.EZConstants.EZRealPlayConstants
+import com.videogo.openapi.EZConstants.EZPTZAction
+import com.videogo.openapi.EZConstants.EZPTZCommand
 import com.videogo.openapi.EZOpenSDK
 import com.videogo.openapi.EZPlayer
 
@@ -15,6 +17,8 @@ enum class EzvizPlaybackState {
     STOPPED,
     ERROR,
 }
+
+enum class CameraDirection { UP, DOWN, LEFT, RIGHT }
 
 object EzvizSdk {
     private var initializedAppKey: String? = null
@@ -32,6 +36,28 @@ object EzvizSdk {
             error("萤石 AppKey 已变化，请重新启动应用")
         }
         return EZOpenSDK.getInstance().also { it.setAccessToken(session.accessToken) }
+    }
+
+    fun controlPtz(
+        application: Application,
+        session: CameraSdkSession,
+        direction: CameraDirection,
+        moving: Boolean,
+    ) {
+        val command = when (direction) {
+            CameraDirection.UP -> EZPTZCommand.EZPTZCommandUp
+            CameraDirection.DOWN -> EZPTZCommand.EZPTZCommandDown
+            CameraDirection.LEFT -> EZPTZCommand.EZPTZCommandLeft
+            CameraDirection.RIGHT -> EZPTZCommand.EZPTZCommandRight
+        }
+        val action = if (moving) EZPTZAction.EZPTZActionSTART else EZPTZAction.EZPTZActionSTOP
+        configure(application, session).controlPTZ(
+            session.deviceSerial,
+            session.channelNo,
+            command,
+            action,
+            1,
+        )
     }
 }
 

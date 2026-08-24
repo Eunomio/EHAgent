@@ -262,6 +262,11 @@ class EzvizClient:
             raise EzvizError("萤石接口未返回图片地址")
         return str(url)
 
+    async def download_picture(self, picture_url: str) -> tuple[bytes, str]:
+        response = await self.client.get(picture_url)
+        response.raise_for_status()
+        return response.content, response.headers.get("content-type", "image/jpeg")
+
     async def live_address(self) -> dict[str, Any]:
         """Request a short-lived HLS address without exposing app credentials."""
 

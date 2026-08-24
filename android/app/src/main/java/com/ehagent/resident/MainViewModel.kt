@@ -1,11 +1,16 @@
 package com.ehagent.resident
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 data class UiState(
     val loading: Boolean = true,
@@ -18,21 +23,48 @@ data class UiState(
     val cameraStreamLoading: Boolean = false,
     val cameraSession: CameraSdkSession? = null,
     val cameraStreamError: String? = null,
+    val safetyBaseline: SafetyBaselineStatus = SafetyBaselineStatus(),
+    val safetyBaselineNeedsRefresh: Boolean = false,
+    val baselineSaving: Boolean = false,
+    val baselineError: String? = null,
+    val safetyAnalysis: SafetyAnalysis? = null,
+    val safetyAnalysisLoading: Boolean = false,
+    val safetyAnalysisError: String? = null,
+    val cameraMoveError: String? = null,
     val assistantMessages: List<AssistantMessage> = emptyList(),
     val assistantLoading: Boolean = false,
     val assistantError: String? = null,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+    companion object {
+        private const val BASELINE_MOVE_THRESHOLD_MS = 1_200L
+    }
+
     private val preferences = application.getSharedPreferences("connection", 0)
     private val _state = MutableStateFlow(UiState())
     val state = _state.asStateFlow()
+    private val cameraMoveMutex = Mutex()
+    private val safetyRefreshMutex = Mutex()
+    private val cameraMoveStartedAt = mutableMapOf<CameraDirection, Long>()
     var backendUrl: String
         get() = preferences.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
         private set(value) { preferences.edit().putString("backend_url", value.trimEnd('/')).apply() }
     private var assistantConversationId: String?
         get() = preferences.getString("assistant_conversation_id", null)
         set(value) { preferences.edit().putString("assistant_conversation_id", value).apply() }
+
+    private var savedBaselineNeedsRefresh: Boolean
+        get() = preferences.getBoolean("safety_baseline_needs_refresh", false)
+        set(value) { preferences.edit().putBoolean("safety_baseline_needs_refresh", value).apply() }
+
+    private var cameraHorizontalOffsetMs: Long
+        get() = preferences.getLong("camera_horizontal_offset_ms", 0L)
+        set(value) { preferences.edit().putLong("camera_horizontal_offset_ms", value).apply() }
+
+    private var cameraVerticalOffsetMs: Long
+        get() = preferences.getLong("camera_vertical_offset_ms", 0L)
+        set(value) { preferences.edit().putLong("camera_vertical_offset_ms", value).apply() }
 
     init { refresh() }
 
@@ -43,12 +75,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val dashboard = api.dashboard()
             val devices = api.devices()
             val settings = api.settings()
+            val safetyBaseline = runCatching { api.safetyBaseline() }
+                .getOrDefault(_state.value.safetyBaseline)
+            val latestSafetyAnalysis = runCatching { api.latestSafetyAnalysis() }
+                .getOrDefault(_state.value.safetyAnalysis)
+            if (safetyBaseline.ready && savedBaselineNeedsRefresh) {
+                savedBaselineNeedsRefresh = false
+                resetCameraMovementOffset()
+            }
             _state.value = _state.value.copy(
                 loading = false,
                 dashboard = dashboard,
                 devices = devices,
                 cameraPaused = settings.optBoolean("camera_paused"),
                 sleepPaused = settings.optBoolean("sleep_alerts_paused"),
+                safetyBaseline = safetyBaseline,
+                baselineError = if (safetyBaseline.ready) null else _state.value.baselineError,
+                safetyAnalysis = latestSafetyAnalysis,
+                safetyBaselineNeedsRefresh = savedBaselineNeedsRefresh,
                 error = null,
             )
         }.onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "暂时无法连接") }
@@ -72,6 +116,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { ProductApi(backendUrl).taskAction(id, action) }
             .onSuccess { _state.value = _state.value.copy(notice = "已记录"); refresh() }
             .onFailure { _state.value = _state.value.copy(error = it.message) }
+    }
+
+    fun refreshSafetyStatus() = viewModelScope.launch {
+        if (_state.value.safetyAnalysisLoading || _state.value.baselineSaving) return@launch
+        if (!safetyRefreshMutex.tryLock()) return@launch
+        try {
+            val api = ProductApi(backendUrl)
+            // The latest result is the time-sensitive part. Refresh it independently so a
+            // temporary failure in dashboard or baseline never hides an automatic check.
+            runCatching { api.latestSafetyAnalysis() }.onSuccess { analysis ->
+                _state.value = _state.value.copy(safetyAnalysis = analysis)
+            }
+            runCatching { api.dashboard() }.onSuccess { dashboard ->
+                _state.value = _state.value.copy(dashboard = dashboard)
+            }
+            runCatching { api.safetyBaseline() }.onSuccess { baseline ->
+                if (baseline.ready && savedBaselineNeedsRefresh) {
+                    savedBaselineNeedsRefresh = false
+                    resetCameraMovementOffset()
+                }
+                _state.value = _state.value.copy(
+                    safetyBaseline = baseline,
+                    safetyBaselineNeedsRefresh = savedBaselineNeedsRefresh,
+                    baselineError = if (baseline.ready) null else _state.value.baselineError,
+                )
+            }
+        } finally {
+            safetyRefreshMutex.unlock()
+        }
+    }
+
+    fun confirmSafetyCleaned() = viewModelScope.launch {
+        val current = _state.value
+        val id = current.dashboard.safety.taskId ?: return@launch
+        when {
+            current.cameraPaused -> {
+                _state.value = current.copy(safetyAnalysisError = "请先恢复通道检查")
+                return@launch
+            }
+            !current.safetyBaseline.ready -> {
+                _state.value = current.copy(safetyAnalysisError = "正在识别通道，请稍后再试")
+                return@launch
+            }
+            current.safetyBaselineNeedsRefresh -> {
+                _state.value = current.copy(safetyAnalysisError = "摄像头角度变化较大，正在重新识别通道")
+                return@launch
+            }
+        }
+        _state.value = current.copy(
+            safetyAnalysisLoading = true,
+            safetyAnalysisError = null,
+        )
+        runCatching {
+            val api = ProductApi(backendUrl)
+            api.taskAction(id, "done")
+            api.analyzeSafety()
+        }.onSuccess { analysis ->
+            _state.value = _state.value.copy(
+                safetyAnalysis = analysis,
+                safetyAnalysisLoading = false,
+                notice = "通道复查已完成",
+            )
+            refresh()
+        }.onFailure {
+            _state.value = _state.value.copy(
+                safetyAnalysisLoading = false,
+                safetyAnalysisError = it.message ?: "复查没有完成，请稍后重试",
+            )
+        }
     }
 
     fun setCameraPaused(paused: Boolean) = viewModelScope.launch {
@@ -117,6 +230,104 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cameraSession = null,
             cameraStreamError = null,
         )
+    }
+
+    fun saveSafetyBaseline(onSaved: () -> Unit = {}) = viewModelScope.launch {
+        _state.value = _state.value.copy(baselineSaving = true, baselineError = null)
+        runCatching { ProductApi(backendUrl).saveSafetyBaseline() }
+            .onSuccess { baseline ->
+                savedBaselineNeedsRefresh = false
+                resetCameraMovementOffset()
+                _state.value = _state.value.copy(
+                    safetyBaseline = baseline,
+                    safetyBaselineNeedsRefresh = false,
+                    baselineSaving = false,
+                    safetyAnalysis = null,
+                    notice = "通道已重新识别",
+                )
+                onSaved()
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    baselineSaving = false,
+                    baselineError = it.message ?: "暂时无法保存，请稍后重试",
+                )
+            }
+    }
+
+    fun analyzeSafety() = viewModelScope.launch {
+        _state.value = _state.value.copy(
+            safetyAnalysisLoading = true,
+            safetyAnalysisError = null,
+        )
+        runCatching { ProductApi(backendUrl).analyzeSafety() }
+            .onSuccess { analysis ->
+                _state.value = _state.value.copy(
+                    safetyAnalysis = analysis,
+                    safetyAnalysisLoading = false,
+                )
+                refresh()
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    safetyAnalysisLoading = false,
+                    safetyAnalysisError = it.message ?: "本次检查没有完成，请稍后重试",
+                )
+            }
+    }
+
+    fun setCameraMoving(direction: CameraDirection, moving: Boolean) = viewModelScope.launch {
+        val session = _state.value.cameraSession ?: return@launch
+        cameraMoveMutex.withLock {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    EzvizSdk.controlPtz(getApplication(), session, direction, moving)
+                }
+            }.onSuccess {
+                _state.value = _state.value.copy(cameraMoveError = null)
+                recordCameraMovement(direction, moving)
+            }.onFailure {
+                _state.value = _state.value.copy(
+                    cameraMoveError = "摄像头暂时无法移动，请稍后重试",
+                )
+            }
+        }
+    }
+
+    private fun recordCameraMovement(direction: CameraDirection, moving: Boolean) {
+        if (moving) {
+            cameraMoveStartedAt[direction] = SystemClock.elapsedRealtime()
+            return
+        }
+        val startedAt = cameraMoveStartedAt.remove(direction) ?: return
+        val duration = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
+        when (direction) {
+            CameraDirection.LEFT -> cameraHorizontalOffsetMs -= duration
+            CameraDirection.RIGHT -> cameraHorizontalOffsetMs += duration
+            CameraDirection.UP -> cameraVerticalOffsetMs -= duration
+            CameraDirection.DOWN -> cameraVerticalOffsetMs += duration
+        }
+        val movementSquared =
+            cameraHorizontalOffsetMs * cameraHorizontalOffsetMs +
+                cameraVerticalOffsetMs * cameraVerticalOffsetMs
+        val thresholdSquared = BASELINE_MOVE_THRESHOLD_MS * BASELINE_MOVE_THRESHOLD_MS
+        if (
+            movementSquared >= thresholdSquared &&
+            _state.value.safetyBaseline.ready &&
+            !_state.value.safetyBaselineNeedsRefresh
+        ) {
+            savedBaselineNeedsRefresh = true
+            _state.value = _state.value.copy(safetyBaselineNeedsRefresh = true)
+            viewModelScope.launch {
+                runCatching { ProductApi(backendUrl).invalidateSafetyBaseline() }
+            }
+        }
+    }
+
+    private fun resetCameraMovementOffset() {
+        cameraMoveStartedAt.clear()
+        cameraHorizontalOffsetMs = 0L
+        cameraVerticalOffsetMs = 0L
     }
 
     fun setSleepPaused(paused: Boolean) = viewModelScope.launch {

@@ -37,6 +37,17 @@ data class CameraSdkSession(
     val channelNo: Int,
     val verifyCode: String,
 )
+data class SafetyBaselineStatus(
+    val ready: Boolean = false,
+    val capturedAt: String? = null,
+)
+data class SafetyAnalysis(
+    val riskLevel: String,
+    val headline: String,
+    val actionText: String,
+    val reason: String,
+    val checkedAt: String,
+)
 data class AssistantSource(val title: String, val url: String)
 data class AssistantAction(val id: String, val label: String, val status: String)
 data class AssistantMessage(
@@ -54,11 +65,16 @@ data class AssistantChatResult(
 )
 
 class ProductApi(private val baseUrl: String) {
-    private suspend fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
+    private suspend fun request(
+        path: String,
+        method: String = "GET",
+        body: JSONObject? = null,
+        readTimeoutMillis: Int = 15_000,
+    ): JSONObject = withContext(Dispatchers.IO) {
         val connection = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
         connection.requestMethod = method
         connection.connectTimeout = 5000
-        connection.readTimeout = 8000
+        connection.readTimeout = readTimeoutMillis
         connection.setRequestProperty("Accept", "application/json")
         if (body != null) {
             connection.doOutput = true
@@ -125,6 +141,56 @@ class ProductApi(private val baseUrl: String) {
             deviceSerial = root.getString("device_serial"),
             channelNo = root.optInt("channel_no", 1),
             verifyCode = root.optString("verify_code"),
+        )
+    }
+
+    suspend fun safetyBaseline(): SafetyBaselineStatus {
+        val root = request("/api/v1/devices/c6c/safety/baseline")
+        return SafetyBaselineStatus(
+            ready = root.optBoolean("ready"),
+            capturedAt = root.optionalString("captured_at"),
+        )
+    }
+
+    suspend fun saveSafetyBaseline(): SafetyBaselineStatus {
+        val root = request(
+            "/api/v1/devices/c6c/safety/baseline",
+            method = "POST",
+            readTimeoutMillis = 30_000,
+        )
+        return SafetyBaselineStatus(
+            ready = root.optBoolean("ready"),
+            capturedAt = root.optionalString("captured_at"),
+        )
+    }
+
+    suspend fun invalidateSafetyBaseline() {
+        request("/api/v1/devices/c6c/safety/baseline/invalidate", method = "POST")
+    }
+
+    suspend fun analyzeSafety(): SafetyAnalysis {
+        val root = request(
+            "/api/v1/devices/c6c/safety/analyze",
+            method = "POST",
+            readTimeoutMillis = 120_000,
+        )
+        return root.toSafetyAnalysis()
+    }
+
+    suspend fun latestSafetyAnalysis(): SafetyAnalysis? {
+        val root = request("/api/v1/devices/c6c/safety/latest")
+        val analysis = root.optJSONObject("analysis") ?: return null
+        return analysis.toSafetyAnalysis(flat = true)
+    }
+
+    private fun JSONObject.toSafetyAnalysis(flat: Boolean = false): SafetyAnalysis {
+        val assessment = if (flat) this else getJSONObject("assessment")
+        return SafetyAnalysis(
+            riskLevel = assessment.getString("risk_level"),
+            headline = assessment.getString("headline"),
+            actionText = assessment.getString("action_text"),
+            reason = getString("reason"),
+            checkedAt = getString("checked_at"),
         )
     }
 
