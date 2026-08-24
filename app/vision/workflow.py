@@ -1,7 +1,7 @@
 from typing import Any
 
 from app.core.config import Settings
-from app.store import ProductStore
+from app.store import ProductStore, now_iso
 
 
 def record_safety_result(
@@ -10,7 +10,17 @@ def record_safety_result(
     result: dict[str, Any],
     source: str = "camera_safety",
 ) -> dict[str, Any]:
-    current_task = store.latest_task()
+    previous_checks = store.recent_checks(1)
+    previous_risk = previous_checks[0]["result"] if previous_checks else None
+    current_task = store.latest_task(include_deferred=True)
+    deferred_ready = bool(
+        current_task
+        and current_task["status"] == "deferred"
+        and (
+            not current_task.get("remind_at")
+            or str(current_task["remind_at"]) <= now_iso()
+        )
+    )
     recheck_task = (
         current_task
         if current_task and current_task["status"] == "rescan_pending"
@@ -19,7 +29,6 @@ def record_safety_result(
     assessment = result["assessment"]
     reason = result["reason"]
     risk_level = assessment["risk_level"]
-    check = store.add_safety_check(risk_level, source, reason)
     task = None
 
     if recheck_task and risk_level in {"medium", "high"}:
@@ -61,12 +70,15 @@ def record_safety_result(
                     "action_text": "当前无需继续整理",
                 })
     elif risk_level in {"medium", "high"} and current_task:
-        task = store.update_safety_task(
-            current_task["id"],
-            title=assessment["headline"],
-            explanation=reason,
-            suggestion=assessment["action_text"],
-        )
+        if current_task["status"] == "deferred" and not deferred_ready:
+            task = current_task
+        else:
+            task = store.update_safety_task(
+                current_task["id"],
+                title=assessment["headline"],
+                explanation=reason,
+                suggestion=assessment["action_text"],
+            )
     elif risk_level in {"medium", "high"}:
         task = store.create_safety_task(
             title=assessment["headline"],
@@ -78,8 +90,34 @@ def record_safety_result(
     elif current_task:
         task = current_task
 
-    return {
+    is_new_alert = bool(
+        risk_level in {"medium", "high"}
+        and (
+            previous_risk not in {"medium", "high"}
+            or (risk_level == "high" and previous_risk != "high")
+            or deferred_ready
+        )
+    )
+    notification_required = source == "camera_safety_auto" and is_new_alert
+    speech_auto_play = bool(
+        risk_level in {"medium", "high"}
+        and (source != "camera_safety_auto" or is_new_alert)
+    )
+    stored_result = {
         **result,
+        "notification_required": notification_required,
+        "speech_auto_play": speech_auto_play,
+    }
+    check = store.add_safety_check(
+        risk_level,
+        source,
+        reason,
+        result.get("evidence_path"),
+        stored_result,
+    )
+
+    return {
+        **stored_result,
         "recheck": recheck_task is not None,
         "check_id": check["id"],
         "task_id": task["id"] if task else None,

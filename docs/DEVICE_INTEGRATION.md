@@ -23,6 +23,27 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/devices/c6c/capture
 
 抓图接口使用萤石开放平台的设备抓图能力。当前服务会取得真实图片地址并登记一次待分析检查。模型判断完成后，再把结果发到 `safety-results` 接口。
 
+### 通道画面变化触发
+
+自动通道检查每2秒优先轮询萤石设备告警接口`/api/lapp/alarm/device/list`。新告警必须匹配当前配置的设备序列号和通道号；同一告警编号只处理一次。收到告警后默认等待1秒，让移动过程结束，再抓取当前图片并检查。
+
+萤石告警请求超过2秒、返回错误或暂时不可用时，服务立即使用本地图片差异检测。连续8秒没有告警时也执行一次本地校验，防止设备未上报告警。本地变化以1秒间隔确认两张图片。发送视觉分析前会把超大图片压缩到最长边1280像素，减少上传和图片预处理时间。相关配置：
+
+```dotenv
+EH_EZVIZ_ALARM_DETECTION_ENABLED=true
+EH_EZVIZ_ALARM_POLL_SECONDS=2
+EH_EZVIZ_ALARM_TIMEOUT_SECONDS=2
+EH_EZVIZ_ALARM_SETTLE_SECONDS=1
+EH_EZVIZ_ALARM_FALLBACK_SECONDS=8
+EH_VLM_CHANGE_POLL_SECONDS=1
+EH_VLM_CHANGE_CONFIRMATIONS=2
+EH_VLM_CHANGE_COOLDOWN_SECONDS=10
+EH_VLM_IMAGE_MAX_DIMENSION=1280
+EH_VLM_IMAGE_JPEG_QUALITY=85
+```
+
+使用前需要在萤石云视频中开启C6c的移动侦测或布防。若当前账号没有告警列表权限，日志会记录萤石告警不可用，通道检查继续使用本地检测。
+
 老人端查看实时画面时，APK向Windows Agent取得播放会话，再由萤石Android SDK的`EZPlayer`按设备序列号和通道号直接取流。AppSecret不会发送到APK。SDK播放会话测试接口：
 
 ```powershell

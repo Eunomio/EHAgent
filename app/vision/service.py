@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import httpx
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.core.config import Settings
 from app.devices.ezviz import EzvizClient
@@ -27,18 +27,42 @@ class UnsafeBaselineError(VisionSafetyError):
     pass
 
 
+HazardType = Literal["box", "bag", "shoe", "stool", "cable", "other_obstacle"]
+
+
+class HazardRegion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hazard_type: HazardType
+    label: str = Field(min_length=1, max_length=20)
+    risk_level: Literal["low", "medium", "high"]
+    x1: int = Field(ge=0, le=1000)
+    y1: int = Field(ge=0, le=1000)
+    x2: int = Field(ge=0, le=1000)
+    y2: int = Field(ge=0, le=1000)
+
+    @model_validator(mode="after")
+    def valid_rectangle(self) -> "HazardRegion":
+        if self.x2 - self.x1 < 10 or self.y2 - self.y1 < 10:
+            raise ValueError("风险框范围过小")
+        return self
+
+
 class VisionPrediction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     visibility: Literal["usable", "limited", "insufficient"]
     hazard_present: bool | None
-    hazard_types: list[Literal["box", "bag", "shoe", "stool", "cable", "other_obstacle"]]
+    hazard_types: list[HazardType]
     position_zone: Literal["outside", "boundary", "inner_side", "center", "unknown"]
     walkway_occupation: Literal["none", "under_quarter", "quarter_to_half", "over_half", "unknown"]
     walkway_length_occupation: Literal["none", "under_quarter", "quarter_to_half", "over_half", "unknown"]
     passage_effect: Literal["none", "narrowed", "detour", "difficult", "blocked", "unknown"]
     trip_risk: Literal["none", "possible", "obvious", "unknown"]
     reason: str = Field(min_length=1, max_length=200)
+    hazard_regions: list[HazardRegion] = Field(default_factory=list, max_length=6)
+    walkway_near_x1: int | None = Field(default=None, ge=0, le=1000)
+    walkway_near_x2: int | None = Field(default=None, ge=0, le=1000)
 
 
 HAZARD_ALIASES = {
@@ -50,8 +74,107 @@ HAZARD_ALIASES = {
     "obstacles": "other_obstacle", "clutter": "other_obstacle",
 }
 
+HAZARD_LABELS = {
+    "box": "纸箱", "bag": "袋子", "shoe": "鞋子", "stool": "凳子",
+    "cable": "电线", "other_obstacle": "障碍物",
+}
+
+
+def reconcile_walkway_geometry(prediction: VisionPrediction) -> VisionPrediction:
+    """Correct contradictory semantic fields using the model's own risk boxes."""
+
+    walkway_x1 = prediction.walkway_near_x1
+    walkway_x2 = prediction.walkway_near_x2
+    if (
+        walkway_x1 is None
+        or walkway_x2 is None
+        or walkway_x2 - walkway_x1 < 150
+    ):
+        # The current C6c view places the doorway and near walking line slightly
+        # right of the full-frame center. Model-provided boundaries take priority.
+        walkway_x1, walkway_x2 = 400, 850
+    walkway_width = walkway_x2 - walkway_x1
+    walkway_center = (walkway_x1 + walkway_x2) / 2
+
+    crossing: tuple[HazardRegion, float] | None = None
+    for region in prediction.hazard_regions:
+        overlap = max(0, min(region.x2, walkway_x2) - max(region.x1, walkway_x1))
+        overlap_ratio = overlap / walkway_width
+        if (
+            region.y2 >= 850
+            and region.x2 - region.x1 >= 250
+            and (
+                region.x1 <= walkway_center <= region.x2
+                or overlap_ratio >= 0.4
+            )
+            and overlap_ratio >= 0.25
+        ):
+            crossing = region, overlap_ratio
+            break
+    if crossing is None:
+        return prediction
+
+    region, overlap_ratio = crossing
+    occupation = "over_half" if overlap_ratio >= 0.5 else "quarter_to_half"
+    passage_effect = "difficult" if overlap_ratio >= 0.5 else "detour"
+    return prediction.model_copy(update={
+        "position_zone": "center",
+        "walkway_occupation": occupation,
+        "passage_effect": passage_effect,
+        "trip_risk": "possible" if prediction.trip_risk == "none" else prediction.trip_risk,
+        "reason": (
+            f"{region.label}位于画面近处并伸入通道中央落脚区域，"
+            "正常通过时需要绕开，存在碰撞或绊倒风险。"
+        ),
+        "walkway_near_x1": walkway_x1,
+        "walkway_near_x2": walkway_x2,
+    })
+
+
+def remediation_advice(prediction: VisionPrediction, risk: str) -> str:
+    hazard = prediction.hazard_types[0] if prediction.hazard_types else "other_obstacle"
+    advice = {
+        "box": "请将纸箱移到通道外，避免经过时碰到或绊倒",
+        "bag": "请将袋子收好并移出常用行走路线",
+        "shoe": "请将鞋子收入鞋柜或靠墙整齐摆放",
+        "stool": "请将凳子移出通道，留出自然直行空间",
+        "cable": "请将电线沿墙固定，避免横穿落脚区域",
+        "other_obstacle": "请将影响行走的物品移到通道外",
+    }[hazard]
+    if risk == "high":
+        return advice.replace("请", "请立即", 1)
+    return advice
+
+
+def display_regions(prediction: VisionPrediction, risk: str) -> list[dict[str, Any]]:
+    if risk not in {"low", "medium", "high"}:
+        return []
+    regions = [region.model_copy(deep=True) for region in prediction.hazard_regions]
+    if not regions:
+        return []
+    if risk == "low":
+        for region in regions:
+            region.risk_level = "low"
+    elif not any(region.risk_level in {"medium", "high"} for region in regions):
+        regions[0].risk_level = risk  # type: ignore[assignment]
+    elif risk == "high" and not any(region.risk_level == "high" for region in regions):
+        next(region for region in regions if region.risk_level == "medium").risk_level = "high"
+    return [region.model_dump(mode="json") for region in regions]
+
 
 def derive_assessment(prediction: VisionPrediction) -> dict[str, str]:
+    prediction = reconcile_walkway_geometry(prediction)
+    near_field_crossing = any(
+        region.y2 >= 850
+        and region.x2 - region.x1 >= 250
+        and region.x1
+        <= (
+            (prediction.walkway_near_x1 or 400)
+            + (prediction.walkway_near_x2 or 850)
+        ) / 2
+        <= region.x2
+        for region in prediction.hazard_regions
+    )
     if prediction.visibility == "insufficient" or prediction.hazard_present is None:
         risk = "insufficient"
     elif prediction.hazard_present is False:
@@ -60,10 +183,12 @@ def derive_assessment(prediction: VisionPrediction) -> dict[str, str]:
         prediction.passage_effect in {"difficult", "blocked"}
         or prediction.walkway_occupation == "over_half"
         or prediction.trip_risk == "obvious"
+        or (near_field_crossing and prediction.trip_risk == "possible")
     ):
         risk = "high"
     elif (
         prediction.passage_effect == "detour"
+        or near_field_crossing
         or (
             prediction.walkway_occupation == "quarter_to_half"
             and prediction.position_zone == "center"
@@ -95,6 +220,8 @@ def derive_assessment(prediction: VisionPrediction) -> dict[str, str]:
         "high": ("通道通行受阻", "请尽快清理通道"),
         "insufficient": ("暂时看不清通道", "请调整光线后重新检查"),
     }[risk]
+    if risk in {"medium", "high"}:
+        action_text = remediation_advice(prediction, risk)
     return {"risk_level": risk, "headline": headline, "action_text": action_text}
 
 
@@ -105,6 +232,7 @@ class VisionSafetyService:
         self._owns_client = client is None
         self.root = Path(settings.evidence_root).resolve() / "safety-vision" / "c6c"
         self.analysis_lock = asyncio.Lock()
+        self.speech_lock = asyncio.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -221,13 +349,51 @@ class VisionSafetyService:
             content_type,
             baseline_path.read_bytes(),
         )
+        assessment = derive_assessment(prediction)
         return {
             "checked_at": checked_at,
             "prediction": prediction.model_dump(mode="json"),
-            "assessment": derive_assessment(prediction),
+            "assessment": assessment,
             "reason": prediction.reason,
+            "hazard_regions": display_regions(prediction, assessment["risk_level"]),
             "evidence_path": str(current_path),
         }
+
+    async def synthesize_warning(self, text: str) -> bytes:
+        if not self.settings.tts_enabled or not self.api_key or not self.api_base:
+            raise VisionSafetyError("语音提醒暂时不可用")
+        cleaned = " ".join(text.split())[:500]
+        if not cleaned:
+            raise VisionSafetyError("语音提醒内容为空")
+        response = await self.client.post(
+            f"{self.api_base.rstrip('/')}/audio/speech",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.settings.tts_model,
+                "input": cleaned,
+                "voice": self.settings.tts_voice,
+                "response_format": "mp3",
+                "speed": self.settings.tts_speed,
+            },
+            timeout=self.settings.vlm_timeout_seconds,
+        )
+        response.raise_for_status()
+        if len(response.content) < 128:
+            raise VisionSafetyError("语音提醒生成失败")
+        return response.content
+
+    async def warning_audio(self, check_id: str, text: str) -> bytes:
+        path = self.root / f"speech-{check_id}.mp3"
+        async with self.speech_lock:
+            if path.is_file() and path.stat().st_size >= 128:
+                return path.read_bytes()
+            audio = await self.synthesize_warning(text)
+            self.root.mkdir(parents=True, exist_ok=True)
+            self._replace_file(path, audio)
+            return audio
 
     async def _predict(
         self,
@@ -236,8 +402,14 @@ class VisionSafetyService:
         baseline_image: bytes,
         baseline_validation: bool = False,
     ) -> VisionPrediction:
-        current_url = self._data_url(current_image, content_type)
-        baseline_url = self._data_url(baseline_image, "image/jpeg")
+        current_model_image, current_model_type = self._prepare_model_image(
+            current_image, content_type
+        )
+        baseline_model_image, baseline_model_type = self._prepare_model_image(
+            baseline_image, "image/jpeg"
+        )
+        current_url = self._data_url(current_model_image, current_model_type)
+        baseline_url = self._data_url(baseline_model_image, baseline_model_type)
         prediction: VisionPrediction | None = None
         last_error: Exception | None = None
         for correction_attempt in range(2):
@@ -258,9 +430,9 @@ class VisionSafetyService:
                 )
                 response.raise_for_status()
                 raw = response.json()["choices"][0]["message"]["content"]
-                prediction = VisionPrediction.model_validate(
+                prediction = reconcile_walkway_geometry(VisionPrediction.model_validate(
                     self._normalize(self._parse_object(raw))
-                )
+                ))
                 break
             except (
                 httpx.HTTPError,
@@ -325,19 +497,29 @@ class VisionSafetyService:
             "trip_risk为none；必须单独检查物品是否实际伸入脚的行进区域。只有画面中能观察到"
             "物品进入常用落脚位置、需要绕脚或跨越时，才使用possible或obvious，禁止仅凭靠近边缘推测。"
             "只依据可见内容判断。看不清时使用unknown、null或insufficient，不补充图片外的信息。"
-            "reason使用一句简短中文说明可见依据。必须且只能返回九个字段："
+            "reason使用一句简短中文说明可见依据。hazard_regions用于标出真正需要关注的物品，"
+            "最多6个；每项包含hazard_type、中文label、risk_level和x1、y1、x2、y2。"
+            "坐标以当前图片左上角为原点，在0到1000之间归一化，框住物品可见范围。"
+            "risk_level只能是low、medium、high；不影响通行的边缘置物不要添加风险框。"
+            "walkway_near_x1和walkway_near_x2表示基准图中画面近处实际可通行开口的左右边界，"
+            "同样使用0到1000归一化横坐标；无法可靠判断时返回null。"
+            "如果无法可靠定位，hazard_regions返回空数组，禁止编造坐标。必须返回十二个字段："
             "visibility、hazard_present、hazard_types、position_zone、walkway_occupation、"
-            "walkway_length_occupation、passage_effect、trip_risk、reason。每个字段都必须出现。"
+            "walkway_length_occupation、passage_effect、trip_risk、reason、hazard_regions、"
+            "walkway_near_x1、walkway_near_x2。前九个字段必须出现，hazard_regions无法定位时"
+            "也要返回空数组。"
             "输出示例："
             '{"visibility":"usable","hazard_present":false,"hazard_types":[],'
             '"position_zone":"outside","walkway_occupation":"none",'
             '"walkway_length_occupation":"none","passage_effect":"none",'
-            '"trip_risk":"none","reason":"当前通道与安全基准图一致，未见新增障碍物。"}'
+            '"trip_risk":"none","reason":"当前通道与安全基准图一致，未见新增障碍物。",'
+            '"hazard_regions":[],"walkway_near_x1":400,"walkway_near_x2":850}'
             "边缘纸箱且不影响通行的输出示例："
             '{"visibility":"usable","hazard_present":true,"hazard_types":["box"],'
             '"position_zone":"inner_side","walkway_occupation":"under_quarter",'
             '"walkway_length_occupation":"under_quarter","passage_effect":"none",'
-            '"trip_risk":"none","reason":"纸箱位于走道边缘，剩余宽度足够直行通过。"}'
+            '"trip_risk":"none","reason":"纸箱位于走道边缘，剩余宽度足够直行通过。",'
+            '"hazard_regions":[],"walkway_near_x1":400,"walkway_near_x2":850}'
         )
         if baseline_validation:
             prompt += (
@@ -348,7 +530,7 @@ class VisionSafetyService:
             )
         if correction:
             prompt += (
-                "上一次输出存在字段缺失或类型错误。请重新检查图片，完整返回上述九个字段。"
+                "上一次输出存在字段缺失或类型错误。请重新检查图片，完整返回上述十个字段。"
                 "占用比例必须使用指定英文枚举，不能使用0、0.0、百分数或其他数字。"
             )
         return {
@@ -404,6 +586,37 @@ class VisionSafetyService:
             normalized["hazard_types"] = list(dict.fromkeys(
                 HAZARD_ALIASES.get(str(item).lower(), item) for item in hazards
             ))
+        regions: list[dict[str, Any]] = []
+        raw_regions = normalized.get("hazard_regions", [])
+        if isinstance(raw_regions, list):
+            for raw in raw_regions[:6]:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    hazard = HAZARD_ALIASES.get(
+                        str(raw.get("hazard_type", "other_obstacle")).lower(),
+                        str(raw.get("hazard_type", "other_obstacle")).lower(),
+                    )
+                    if hazard not in HAZARD_LABELS:
+                        hazard = "other_obstacle"
+                    x1 = max(0, min(1000, int(float(raw.get("x1", 0)))))
+                    y1 = max(0, min(1000, int(float(raw.get("y1", 0)))))
+                    x2 = max(0, min(1000, int(float(raw.get("x2", 0)))))
+                    y2 = max(0, min(1000, int(float(raw.get("y2", 0)))))
+                    if x2 - x1 < 10 or y2 - y1 < 10:
+                        continue
+                    region_risk = str(raw.get("risk_level", "low")).lower()
+                    if region_risk not in {"low", "medium", "high"}:
+                        region_risk = "low"
+                    regions.append({
+                        "hazard_type": hazard,
+                        "label": str(raw.get("label") or HAZARD_LABELS[hazard])[:20],
+                        "risk_level": region_risk,
+                        "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    })
+                except (TypeError, ValueError):
+                    continue
+        normalized["hazard_regions"] = regions
         return normalized
 
     @staticmethod
@@ -412,6 +625,30 @@ class VisionSafetyService:
         if not mime.startswith("image/"):
             mime = mimetypes.guess_type("capture.jpg")[0] or "image/jpeg"
         return f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
+
+    def _prepare_model_image(self, image: bytes, content_type: str) -> tuple[bytes, str]:
+        """Reduce upload and multimodal preprocessing time without changing evidence files."""
+
+        try:
+            with Image.open(BytesIO(image)) as opened:
+                converted = opened.convert("RGB")
+                converted.thumbnail(
+                    (
+                        self.settings.vlm_image_max_dimension,
+                        self.settings.vlm_image_max_dimension,
+                    ),
+                    Image.Resampling.LANCZOS,
+                )
+                output = BytesIO()
+                converted.save(
+                    output,
+                    format="JPEG",
+                    quality=self.settings.vlm_image_jpeg_quality,
+                    optimize=True,
+                )
+                return output.getvalue(), "image/jpeg"
+        except (OSError, UnidentifiedImageError):
+            return image, content_type
 
     @staticmethod
     def _validate_image(image: bytes, content_type: str) -> None:

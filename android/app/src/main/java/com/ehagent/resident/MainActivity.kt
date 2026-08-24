@@ -1,6 +1,8 @@
 package com.ehagent.resident
 
+import android.Manifest
 import android.os.Bundle
+import android.os.Build
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -12,7 +14,9 @@ import android.view.SurfaceView
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -29,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,6 +49,8 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -60,8 +67,19 @@ internal val Muted = Color(0xFF66706A)
 internal val Canvas = Color(0xFFF6F7F3)
 
 class MainActivity : ComponentActivity() {
+    private val notificationPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent { EHAgentTheme { ResidentApp() } }
     }
 }
@@ -88,7 +106,7 @@ private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.
     val mainPages = remember { listOf(Page.HOME, Page.SAFETY, Page.SLEEP, Page.ME) }
     LaunchedEffect(viewModel) {
         while (isActive) {
-            delay(5_000)
+            delay(2_000)
             viewModel.refreshSafetyStatus()
         }
     }
@@ -240,11 +258,11 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
         if (state.dashboard.safety.taskId == null) {
             EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
         } else {
-            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = WarmSoft)) {
+            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
                 Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(
                         if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
-                        color = Color(0xFF9A5B12),
+                        color = Color(0xFFC73A31),
                         fontWeight = FontWeight.Bold,
                     )
                     Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
@@ -276,7 +294,7 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
                         onClick = { vm.taskAction("later") },
                         enabled = !state.safetyAnalysisLoading,
                         modifier = Modifier.align(Alignment.CenterHorizontally),
-                    ) { Text("稍后提醒我") }
+                    ) { Text("30分钟后提醒") }
                 }
             }
         }
@@ -296,14 +314,21 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
 private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
     val result = state.safetyAnalysis
     val resultColor = when (result?.riskLevel) {
-        "high", "medium" -> WarmSoft
-        "low" -> Color(0xFFFFF7E7)
+        "high", "medium" -> Color(0xFFFFE6E3)
+        "low" -> Color(0xFFFFF3D6)
         else -> BrandSoft
     }
     Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = resultColor)) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                RoundIcon(Icons.Rounded.Search, if (result?.riskLevel in setOf("high", "medium")) Warm else Brand)
+                RoundIcon(
+                    Icons.Rounded.Search,
+                    when (result?.riskLevel) {
+                        "high", "medium" -> Color(0xFFC73A31)
+                        "low" -> Color(0xFFB77900)
+                        else -> Brand
+                    },
+                )
                 Spacer(Modifier.width(13.dp))
                 Column(Modifier.weight(1f)) {
                     Text("检查当前通道", fontSize = 21.sp, fontWeight = FontWeight.Bold)
@@ -319,10 +344,34 @@ private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
             }
             result?.let {
                 HorizontalDivider(color = Ink.copy(alpha = .08f))
+                val statusColor = when (it.riskLevel) {
+                    "high", "medium" -> Color(0xFFC73A31)
+                    "low" -> Color(0xFF9A6700)
+                    else -> Brand
+                }
+                Surface(color = statusColor.copy(alpha = .12f), shape = RoundedCornerShape(50)) {
+                    Text(
+                        when (it.riskLevel) {
+                            "high", "medium" -> "需要整改"
+                            "low" -> "潜在风险"
+                            else -> "通道安全"
+                        },
+                        color = statusColor,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    )
+                }
                 Text(it.headline, fontSize = 23.sp, fontWeight = FontWeight.Bold)
                 Text(it.reason, fontSize = 17.sp, lineHeight = 25.sp)
-                Text(it.actionText, color = Brand, fontWeight = FontWeight.SemiBold)
+                Text(it.actionText, color = statusColor, fontWeight = FontWeight.SemiBold)
                 Text("检查时间 ${shortDateTime(it.checkedAt)}", color = Muted, fontSize = 14.sp)
+                if (it.speechUrl != null && it.riskLevel in setOf("medium", "high")) {
+                    TextButton(onClick = vm::replaySafetySpeech) {
+                        Icon(Icons.Rounded.VolumeUp, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("播放语音提醒")
+                    }
+                }
             }
             state.safetyAnalysisError?.let { Text(it, color = Color(0xFFB44336)) }
             Button(
@@ -415,7 +464,13 @@ private fun CameraStreamCard(state: UiState, vm: MainViewModel) {
                     Spacer(Modifier.width(12.dp))
                     Text("正在打开画面…", fontSize = 17.sp)
                 }
-                state.cameraSession != null -> CameraPlayer(state.cameraSession, vm, state.cameraMoveError)
+                state.cameraSession != null -> CameraPlayer(
+                    state.cameraSession,
+                    vm,
+                    state.cameraMoveError,
+                    state.safetyAnalysis,
+                    state.safetyBaselineNeedsRefresh,
+                )
                 else -> {
                     state.cameraStreamError?.let {
                         Text(it, color = Color(0xFFB44336), lineHeight = 24.sp)
@@ -449,12 +504,19 @@ private fun CameraMessage(title: String, detail: String) {
 }
 
 @Composable
-private fun CameraPlayer(session: CameraSdkSession, vm: MainViewModel, moveError: String?) {
+private fun CameraPlayer(
+    session: CameraSdkSession,
+    vm: MainViewModel,
+    moveError: String?,
+    analysis: SafetyAnalysis?,
+    baselineNeedsRefresh: Boolean,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var playbackState by remember(session) { mutableStateOf(EzvizPlaybackState.CONNECTING) }
     var playbackError by remember(session) { mutableStateOf<String?>(null) }
     var fullscreen by remember(session) { mutableStateOf(false) }
+    val regions = analysis?.hazardRegions.orEmpty().takeUnless { baselineNeedsRefresh }.orEmpty()
     val controller = remember(session) {
         EzvizPlayerController(
             application = context.applicationContext as Application,
@@ -483,7 +545,13 @@ private fun CameraPlayer(session: CameraSdkSession, vm: MainViewModel, moveError
     }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (!fullscreen) {
-            CameraViewport(controller, playbackState, Modifier.fillMaxWidth().aspectRatio(16f / 9f), onFullscreen = { fullscreen = true })
+            CameraViewport(
+                controller,
+                playbackState,
+                Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+                regions = regions,
+                onFullscreen = { fullscreen = true },
+            )
         }
         CameraMoveHandle(onMove = vm::setCameraMoving)
         Text("实时画面默认静音，离开本页后自动关闭", color = Muted, fontSize = 14.sp)
@@ -496,6 +564,7 @@ private fun CameraPlayer(session: CameraSdkSession, vm: MainViewModel, moveError
             playbackState = playbackState,
             moveError = moveError,
             onMove = vm::setCameraMoving,
+            regions = regions,
             onClose = { fullscreen = false },
         )
     }
@@ -506,6 +575,7 @@ private fun CameraViewport(
     controller: EzvizPlayerController,
     playbackState: EzvizPlaybackState,
     modifier: Modifier,
+    regions: List<HazardRegion> = emptyList(),
     onFullscreen: (() -> Unit)? = null,
     fullscreen: Boolean = false,
 ) {
@@ -522,6 +592,7 @@ private fun CameraViewport(
             },
             modifier = Modifier.fillMaxSize(),
         )
+        RiskRegionOverlay(regions, Modifier.fillMaxSize())
         if (playbackState == EzvizPlaybackState.CONNECTING) CircularProgressIndicator(color = Color.White)
         onFullscreen?.let {
             FilledIconButton(
@@ -529,6 +600,60 @@ private fun CameraViewport(
                 modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(alpha = .58f), contentColor = Color.White),
             ) { Icon(Icons.Rounded.Fullscreen, "全屏查看") }
+        }
+    }
+}
+
+@Composable
+private fun RiskRegionOverlay(regions: List<HazardRegion>, modifier: Modifier = Modifier) {
+    if (regions.isEmpty()) return
+    Box(modifier) {
+        Canvas(Modifier.fillMaxSize()) {
+            regions.forEach { region ->
+                val color = if (region.riskLevel == "low") Color(0xFFFFB300) else Color(0xFFE53935)
+                val left = size.width * region.x1 / 1000f
+                val top = size.height * region.y1 / 1000f
+                val width = size.width * (region.x2 - region.x1) / 1000f
+                val height = size.height * (region.y2 - region.y1) / 1000f
+                val topLeft = androidx.compose.ui.geometry.Offset(left, top)
+                val boxSize = androidx.compose.ui.geometry.Size(width, height)
+                drawRect(color.copy(alpha = .14f), topLeft = topLeft, size = boxSize)
+                drawRect(
+                    color,
+                    topLeft = topLeft,
+                    size = boxSize,
+                    style = Stroke(width = 3.dp.toPx()),
+                )
+            }
+        }
+        Surface(
+            modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+            color = Color.Black.copy(alpha = .68f),
+            shape = RoundedCornerShape(6.dp),
+        ) {
+            Text(
+                "最近检查位置",
+                color = Color.White,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+            )
+        }
+        Column(
+            Modifier.align(Alignment.BottomStart).padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            regions.distinctBy { it.label to it.riskLevel }.take(3).forEach { region ->
+                val color = if (region.riskLevel == "low") Color(0xFFFFB300) else Color(0xFFE53935)
+                Surface(color = Color.Black.copy(alpha = .68f), shape = RoundedCornerShape(6.dp)) {
+                    Text(
+                        "${if (region.riskLevel == "low") "留意" else "需整改"} · ${region.label}",
+                        color = color,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                    )
+                }
+            }
         }
     }
 }
@@ -586,6 +711,7 @@ private fun FullscreenCamera(
     playbackState: EzvizPlaybackState,
     moveError: String?,
     onMove: (CameraDirection, Boolean) -> Unit,
+    regions: List<HazardRegion>,
     onClose: () -> Unit,
 ) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -611,6 +737,7 @@ private fun FullscreenCamera(
                 controller,
                 playbackState,
                 Modifier.fillMaxSize(),
+                regions = regions,
                 fullscreen = true,
             )
             FilledIconButton(

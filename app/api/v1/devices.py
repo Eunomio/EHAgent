@@ -1,8 +1,10 @@
+import json
 from datetime import date, timedelta
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 
 from app.dependencies import EzvizDep, LlmDep, SettingsDep, StoreDep, VisionSafetyDep
 from app.devices.ezviz import EzvizError
@@ -143,6 +145,10 @@ def latest_c6c_safety(store: StoreDep) -> dict[str, Any]:
         return {"analysis": None}
     check = checks[0]
     risk_level = check["result"]
+    try:
+        stored = json.loads(check.get("analysis_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        stored = {}
     copy = {
         "clear": ("通道畅通", "保持通道整洁"),
         "low": ("通道可以通行", "保持观察即可"),
@@ -162,8 +168,43 @@ def latest_c6c_safety(store: StoreDep) -> dict[str, Any]:
             "action_text": action_text,
             "reason": check["detail"],
             "checked_at": check["occurred_at"],
+            "check_id": check["id"],
+            "hazard_regions": stored.get("hazard_regions", []),
+            "notification_required": bool(stored.get("notification_required")),
+            "speech_auto_play": bool(stored.get("speech_auto_play")),
+            "speech_url": (
+                f"/api/v1/devices/c6c/safety/{check['id']}/speech"
+                if risk_level in {"medium", "high"}
+                else None
+            ),
         }
     }
+
+
+@router.get("/c6c/safety/{check_id}/speech")
+async def c6c_safety_speech(
+    check_id: str,
+    store: StoreDep,
+    vision: VisionSafetyDep,
+) -> Response:
+    check = store.safety_check(check_id)
+    if not check:
+        raise HTTPException(404, "没有找到这次通道检查")
+    if check["result"] not in {"medium", "high"}:
+        raise HTTPException(409, "本次检查无需语音提醒")
+    task = store.latest_task()
+    headline = task["title"] if task else "通道需要整理"
+    suggestion = task["suggestion"] if task else "请将影响通行的物品移到通道外"
+    text = f"{headline}。{check['detail']}。{suggestion}。"
+    try:
+        audio = await vision.warning_audio(check_id, text)
+    except (httpx.HTTPError, OSError, VisionSafetyError) as exc:
+        raise HTTPException(503, "语音提醒暂时不可用") from exc
+    return Response(
+        content=audio,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.post("/c6c/safety/analyze")
