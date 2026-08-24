@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from app.dependencies import (
 )
 from app.devices.ezviz import EzvizError
 from app.sleep.demo import DEMO_DATASET_ID, import_demo_dataset
+from app.sleep.night_awakening import assess_night_awakening
 from app.vision.service import BaselineMissingError, UnsafeBaselineError, VisionSafetyError
 from app.vision.workflow import record_safety_result
 
@@ -78,6 +79,44 @@ def clear_sleep_demo(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
         "success": True,
         "dataset_id": DEMO_DATASET_ID,
         "deleted": store.delete_demo_sleep(DEMO_DATASET_ID),
+    }
+
+
+@router.post("/sleep/demo/night-awakening")
+def activate_demo_night_awakening(
+    store: StoreDep, settings: SettingsDep
+) -> dict[str, Any]:
+    if settings.app_env == "production":
+        raise HTTPException(403, "生产环境不能激活演示起夜关注")
+    history = store.sleep_report_history(15)
+    latest = history[0] if history else None
+    if (
+        latest is None
+        or latest.get("source") != "demo_generated"
+        or latest.get("demo_dataset_id") != DEMO_DATASET_ID
+    ):
+        raise HTTPException(409, "请先导入8晚演示睡眠数据")
+    assessment = assess_night_awakening(
+        history,
+        detected_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        event_source="demo_generated",
+        event_reliable=True,
+        snapshot_status="provisional",
+        sleep_session_ended=True,
+    )
+    return {"success": True, "night_awakening": store.add_night_awakening(assessment)}
+
+
+@router.delete("/sleep/demo/night-awakening")
+def reset_demo_night_awakening(
+    store: StoreDep, settings: SettingsDep
+) -> dict[str, Any]:
+    if settings.app_env == "production":
+        raise HTTPException(403, "生产环境不能重置演示起夜关注")
+    return {
+        "success": True,
+        "dataset_id": DEMO_DATASET_ID,
+        "deleted": store.delete_demo_night_awakening(DEMO_DATASET_ID),
     }
 
 

@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.dependencies import LlmDep, SettingsDep, StoreDep
 from app.sleep.baseline import compare_to_personal_baseline
+from app.sleep.night_awakening import waiting_payload
 
 router = APIRouter(prefix="/resident", tags=["resident"])
 
@@ -77,6 +78,22 @@ def sleep_sync_payload(
     return store.latest_sleep_sync()
 
 
+def night_awakening_payload(
+    store: StoreDep, latest: dict[str, Any] | None
+) -> dict[str, Any]:
+    if latest is None:
+        return waiting_payload(event_interface_verified=False)
+    assessment = store.latest_night_awakening(
+        source=latest["source"],
+        demo_dataset_id=latest.get("demo_dataset_id"),
+    )
+    if assessment:
+        return assessment
+    return waiting_payload(
+        event_interface_verified=latest.get("bed_exit_status") == "available"
+    )
+
+
 @router.get("/dashboard")
 def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
     preferences = settings_payload(store)
@@ -106,6 +123,7 @@ def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
                 "status": sleep.get("bed_exit_status") if sleep else "unavailable",
             },
             "sync": sleep_sync_payload(store, sleep),
+            "night_awakening": night_awakening_payload(store, sleep),
             "headline": (
                 f"睡了{sleep['duration_minutes'] // 60}小时{sleep['duration_minutes'] % 60}分钟"
                 if sleep
@@ -157,6 +175,7 @@ def sleep(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
             "status": latest.get("bed_exit_status") if latest else "unavailable",
         },
         "sync": sleep_sync_payload(store, latest),
+        "night_awakening": night_awakening_payload(store, latest),
     }
 
 

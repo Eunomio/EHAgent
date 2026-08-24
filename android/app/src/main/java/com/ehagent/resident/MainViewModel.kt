@@ -35,6 +35,7 @@ data class UiState(
     val assistantLoading: Boolean = false,
     val assistantError: String? = null,
     val sleepActionLoading: Boolean = false,
+    val nightAwakeningExpanded: Boolean = false,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -54,6 +55,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var assistantConversationId: String?
         get() = preferences.getString("assistant_conversation_id", null)
         set(value) { preferences.edit().putString("assistant_conversation_id", value).apply() }
+
+    private var nightAwakeningExpanded: Boolean
+        get() = preferences.getBoolean("night_awakening_expanded", false)
+        set(value) { preferences.edit().putBoolean("night_awakening_expanded", value).apply() }
+
+    private var lastAutoExpandedAwakeningId: String?
+        get() = preferences.getString("night_awakening_auto_expanded_id", null)
+        set(value) { preferences.edit().putString("night_awakening_auto_expanded_id", value).apply() }
 
     private var savedBaselineNeedsRefresh: Boolean
         get() = preferences.getBoolean("safety_baseline_needs_refresh", false)
@@ -84,6 +93,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 savedBaselineNeedsRefresh = false
                 resetCameraMovementOffset()
             }
+            val awakening = dashboard.sleep.nightAwakening
+            val autoExpand = awakening.shouldAutoExpand(lastAutoExpandedAwakeningId)
+            if (autoExpand) {
+                lastAutoExpandedAwakeningId = awakening.id
+                nightAwakeningExpanded = true
+            }
             _state.value = _state.value.copy(
                 loading = false,
                 dashboard = dashboard,
@@ -94,6 +109,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 baselineError = if (safetyBaseline.ready) null else _state.value.baselineError,
                 safetyAnalysis = latestSafetyAnalysis,
                 safetyBaselineNeedsRefresh = savedBaselineNeedsRefresh,
+                nightAwakeningExpanded = if (autoExpand) true else nightAwakeningExpanded,
                 error = null,
             )
         }.onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "暂时无法连接") }
@@ -375,14 +391,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(sleepActionLoading = true, error = null)
         runCatching { ProductApi(backendUrl).clearSleepDemo() }
             .onSuccess {
+                nightAwakeningExpanded = false
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
+                    nightAwakeningExpanded = false,
                     notice = "演示睡眠数据已清除",
                 )
                 refresh()
             }
             .onFailure {
                 _state.value = _state.value.copy(sleepActionLoading = false, error = it.message)
+            }
+    }
+
+    fun toggleNightAwakeningExpanded() {
+        val expanded = !_state.value.nightAwakeningExpanded
+        nightAwakeningExpanded = expanded
+        _state.value = _state.value.copy(nightAwakeningExpanded = expanded)
+    }
+
+    fun activateNightAwakeningDemo() = viewModelScope.launch {
+        if (_state.value.sleepActionLoading) return@launch
+        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
+        runCatching { ProductApi(backendUrl).activateNightAwakeningDemo() }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    sleepActionLoading = false,
+                    notice = "演示起夜关注已激活",
+                )
+                refresh()
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    sleepActionLoading = false,
+                    error = it.message ?: "演示起夜关注激活失败",
+                )
+            }
+    }
+
+    fun resetNightAwakeningDemo() = viewModelScope.launch {
+        if (_state.value.sleepActionLoading) return@launch
+        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
+        runCatching { ProductApi(backendUrl).resetNightAwakeningDemo() }
+            .onSuccess {
+                nightAwakeningExpanded = false
+                _state.value = _state.value.copy(
+                    sleepActionLoading = false,
+                    nightAwakeningExpanded = false,
+                    notice = "演示起夜关注已重置",
+                )
+                refresh()
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    sleepActionLoading = false,
+                    error = it.message ?: "演示起夜关注重置失败",
+                )
             }
     }
 

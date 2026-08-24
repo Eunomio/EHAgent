@@ -14,6 +14,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -650,6 +651,11 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
         PageTitle("睡眠", "看看昨晚休息得怎么样", Icons.Rounded.Bedtime)
         if (sleep.duration == null) {
             EmptyCard(Icons.Rounded.Bed, "还没有睡眠记录", "连接无感睡眠助手后，这里会显示真实睡眠数据。")
+            NightAwakeningCard(
+                sleep.nightAwakening,
+                state.nightAwakeningExpanded,
+                vm::toggleNightAwakeningExpanded,
+            )
         } else {
             Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF303B73))) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -695,6 +701,11 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                     }
                 }
             }
+            NightAwakeningCard(
+                sleep.nightAwakening,
+                state.nightAwakeningExpanded,
+                vm::toggleNightAwakeningExpanded,
+            )
             SleepStagesCard(sleep)
             sleep.analysis?.let {
                 Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = BrandSoft)) {
@@ -720,6 +731,107 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
             Text("报告用于了解近期睡眠变化，不代替医疗判断。身体不舒服时，请及时联系家人或医生。", color = Muted, lineHeight = 24.sp)
         }
         SettingsSwitch("暂停睡眠提醒", "睡眠数据仍会保留", state.sleepPaused, vm::setSleepPaused)
+    }
+}
+
+@Composable
+private fun NightAwakeningCard(
+    awakening: NightAwakening,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val attentionColor = when {
+        awakening.state == "resolved" -> Brand
+        awakening.attention == "extra_care" -> Color(0xFFB45309)
+        awakening.attention == "insufficient" -> Muted
+        else -> Brand
+    }
+    val attentionText = awakening.attentionText()
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (awakening.attention == "extra_care") WarmSoft else Color.White,
+        ),
+    ) {
+        Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Bedtime, null, tint = attentionColor)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("起夜关注", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                    Text(attentionText, color = attentionColor, fontWeight = FontWeight.SemiBold)
+                }
+                Icon(
+                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    if (expanded) "收起" else "展开",
+                    tint = Muted,
+                )
+            }
+            Text(awakening.message, fontSize = 16.sp, lineHeight = 24.sp)
+            awakening.detectedAt?.let {
+                Text("最近监测：${shortDateTime(it)}", color = Muted, fontSize = 14.sp)
+            }
+            if (expanded) {
+                HorizontalDivider(color = Color(0xFFE4E8E5))
+                Text("监测到的情况", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    when {
+                        awakening.state == "active" -> "监测到离床，本次关注仍在进行中。"
+                        awakening.state == "resolved" -> "本次离床关注已经结束。"
+                        awakening.eventInterfaceStatus == "pending_verification" ->
+                            "尚未监测到可靠离床事件；萤石离床事件接口仍待真实非空数据验证。"
+                        else -> "尚未监测到离床事件。"
+                    },
+                    color = Muted,
+                    lineHeight = 23.sp,
+                )
+                if (awakening.reasons.isNotEmpty()) {
+                    Text("为什么提醒", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    awakening.reasons.forEach { NightAwakeningReasonRow(it) }
+                }
+                if (awakening.guidance.isNotEmpty()) {
+                    Text("现在可以这样做", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    awakening.guidance.forEach { item ->
+                        Row(Modifier.fillMaxWidth()) {
+                            Text("•", color = Brand, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(8.dp))
+                            Text(item, fontSize = 16.sp, lineHeight = 23.sp)
+                        }
+                    }
+                }
+            }
+            Text(awakening.disclaimer, color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+        }
+    }
+}
+
+@Composable
+private fun NightAwakeningReasonRow(reason: NightAwakeningReason) {
+    val unit = if (reason.metric == "duration_minutes") "分钟" else "次/分"
+    val comparison = if (reason.comparisonStatus == "not_comparable") {
+        "本次睡眠段尚未结束，时长暂不比较"
+    } else if (reason.current == null || reason.baselineMedian == null) {
+        "数据不足"
+    } else {
+        "本次 ${formatOne(reason.current)} · 平时 ${formatOne(reason.baselineMedian)} $unit"
+    }
+    val difference = reason.difference?.let {
+        val prefix = if (it > 0) "+" else ""
+        "$prefix${formatOne(it)} $unit"
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(reason.label.ifBlank { reason.metric }, fontWeight = FontWeight.SemiBold)
+            Text(comparison, color = Muted, fontSize = 14.sp)
+        }
+        difference?.let {
+            Text(
+                it,
+                color = if (reason.adverseChange) Color(0xFFB45309) else Brand,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
@@ -822,6 +934,28 @@ private fun MePage(state: UiState, vm: MainViewModel) {
                     shape = RoundedCornerShape(14.dp),
                 ) {
                     Text(if (state.devices.sleepDemoActive) "一键清除演示数据" else "导入8晚演示数据")
+                }
+                if (state.devices.sleepDemoActive) {
+                    OutlinedButton(
+                        onClick = {
+                            if (state.dashboard.sleep.nightAwakening.state == "waiting") {
+                                vm.activateNightAwakeningDemo()
+                            } else {
+                                vm.resetNightAwakeningDemo()
+                            }
+                        },
+                        enabled = !state.sleepActionLoading,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Text(
+                            if (state.dashboard.sleep.nightAwakening.state == "waiting") {
+                                "演示一次起夜关注"
+                            } else {
+                                "重置起夜关注演示"
+                            },
+                        )
+                    }
                 }
             }
         }

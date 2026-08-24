@@ -15,6 +15,28 @@ data class BaselineMetric(
     val difference: Double?,
     val status: String,
 )
+data class NightAwakeningReason(
+    val metric: String,
+    val label: String,
+    val current: Double?,
+    val baselineMedian: Double?,
+    val difference: Double?,
+    val direction: String?,
+    val comparisonStatus: String,
+    val adverseChange: Boolean,
+)
+data class NightAwakening(
+    val id: String? = null,
+    val state: String = "waiting",
+    val attention: String? = null,
+    val detectedAt: String? = null,
+    val eventInterfaceStatus: String? = null,
+    val snapshotStatus: String? = null,
+    val message: String = "尚未监测到起夜",
+    val reasons: List<NightAwakeningReason> = emptyList(),
+    val guidance: List<String> = emptyList(),
+    val disclaimer: String = "这是根据睡眠变化给出的预防性提示，不代表已经预测到跌倒。",
+)
 data class SleepCard(
     val headline: String = "睡眠数据暂未同步",
     val duration: Int? = null,
@@ -36,6 +58,7 @@ data class SleepCard(
     val dataSource: String? = null,
     val syncStatus: String? = null,
     val syncMessage: String? = null,
+    val nightAwakening: NightAwakening = NightAwakening(),
 )
 data class Dashboard(val greeting: String = "您好", val subtitle: String = "今天也安心生活", val safety: SafetyCard = SafetyCard(), val sleep: SleepCard = SleepCard(), val contactName: String = "家人", val contactPhone: String = "")
 data class DeviceState(
@@ -115,6 +138,7 @@ class ProductApi(private val baseUrl: String) {
         val baseline = sleep.optJSONObject("baseline")
         val metrics = baseline?.optJSONObject("metrics")
         val sync = sleep.optJSONObject("sync")
+        val nightAwakening = sleep.optJSONObject("night_awakening")
         return Dashboard(
             greeting = root.optString("greeting", "您好"), subtitle = root.optString("subtitle", "今天也安心生活"),
             safety = SafetyCard(safety.optString("status"), safety.optString("headline"), safety.optString("detail"), safety.optJSONObject("task")?.optString("id")),
@@ -140,6 +164,7 @@ class ProductApi(private val baseUrl: String) {
                 dataSource = sleep.optionalString("data_source"),
                 syncStatus = sync?.optionalString("status"),
                 syncMessage = sync?.optionalString("message"),
+                nightAwakening = nightAwakening?.toNightAwakening() ?: NightAwakening(),
             ),
             contactName = root.getJSONObject("help").optString("contact_name", "家人"),
             contactPhone = root.getJSONObject("help").optString("contact_phone", "")
@@ -234,6 +259,14 @@ class ProductApi(private val baseUrl: String) {
     )
     suspend fun loadSleepDemo() = request("/api/v1/devices/sleep/demo", method = "POST")
     suspend fun clearSleepDemo() = request("/api/v1/devices/sleep/demo", method = "DELETE")
+    suspend fun activateNightAwakeningDemo() = request(
+        "/api/v1/devices/sleep/demo/night-awakening",
+        method = "POST",
+    )
+    suspend fun resetNightAwakeningDemo() = request(
+        "/api/v1/devices/sleep/demo/night-awakening",
+        method = "DELETE",
+    )
 
     suspend fun sendAssistantMessage(
         conversationId: String?,
@@ -282,6 +315,33 @@ private fun JSONObject.toBaselineMetric() = BaselineMetric(
     baselineMedian = optionalDouble("baseline_median"),
     difference = optionalDouble("difference"),
     status = optString("status", "insufficient"),
+)
+
+internal fun JSONObject.toNightAwakening() = NightAwakening(
+    id = optionalString("id"),
+    state = optString("state", "waiting"),
+    attention = optionalString("attention"),
+    detectedAt = optJSONObject("event")?.optionalString("detected_at"),
+    eventInterfaceStatus = optionalString("event_interface_status"),
+    snapshotStatus = optionalString("snapshot_status"),
+    message = optString("message", "尚未监测到起夜"),
+    reasons = optJSONArray("reasons")?.mapObjects {
+        NightAwakeningReason(
+            metric = it.optString("metric"),
+            label = it.optString("label"),
+            current = it.optionalDouble("current"),
+            baselineMedian = it.optionalDouble("baseline_median"),
+            difference = it.optionalDouble("difference"),
+            direction = it.optionalString("direction"),
+            comparisonStatus = it.optString("comparison_status", "insufficient"),
+            adverseChange = it.optBoolean("adverse_change"),
+        )
+    }.orEmpty(),
+    guidance = optJSONArray("guidance")?.mapStrings().orEmpty(),
+    disclaimer = optString(
+        "disclaimer",
+        "这是根据睡眠变化给出的预防性提示，不代表已经预测到跌倒。",
+    ),
 )
 
 private fun JSONObject.toAssistantAction() = AssistantAction(

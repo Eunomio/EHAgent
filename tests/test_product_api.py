@@ -97,6 +97,49 @@ def test_demo_sleep_is_idempotent_isolated_and_clearable(client: TestClient) -> 
     assert len(restored["history"]) == 1
 
 
+def test_demo_night_awakening_is_idempotent_and_clearable(client: TestClient) -> None:
+    missing = client.post("/api/v1/devices/sleep/demo/night-awakening")
+    assert missing.status_code == 409
+
+    assert client.post("/api/v1/devices/sleep/demo").status_code == 200
+    first = client.post("/api/v1/devices/sleep/demo/night-awakening")
+    second = client.post("/api/v1/devices/sleep/demo/night-awakening")
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["night_awakening"]["id"] == second.json()["night_awakening"]["id"]
+
+    report = client.get("/api/v1/resident/sleep").json()
+    awakening = report["night_awakening"]
+    assert awakening["state"] == "active"
+    assert awakening["attention"] == "extra_care"
+    assert sum(item["adverse_change"] for item in awakening["reasons"]) == 3
+    assert "预测到跌倒" in awakening["disclaimer"]
+
+    reset = client.delete("/api/v1/devices/sleep/demo/night-awakening")
+    assert reset.status_code == 200
+    assert reset.json()["deleted"] == 1
+    waiting = client.get("/api/v1/resident/sleep").json()["night_awakening"]
+    assert waiting["state"] == "waiting"
+
+
+def test_clearing_sleep_demo_also_clears_night_awakening(client: TestClient) -> None:
+    client.post("/api/v1/devices/sleep/demo")
+    client.post("/api/v1/devices/sleep/demo/night-awakening")
+    assert client.delete("/api/v1/devices/sleep/demo").json()["deleted"] == 8
+    assert client.get("/api/v1/resident/sleep").json()["night_awakening"]["state"] == "waiting"
+
+
+def test_production_rejects_night_awakening_demo_operations(client: TestClient) -> None:
+    settings = client.app.state.settings
+    original = settings.app_env
+    settings.app_env = "production"
+    try:
+        assert client.post("/api/v1/devices/sleep/demo/night-awakening").status_code == 403
+        assert client.delete("/api/v1/devices/sleep/demo/night-awakening").status_code == 403
+    finally:
+        settings.app_env = original
+
+
 def test_safety_task_and_action(client: TestClient) -> None:
     result = client.post("/api/v1/ingest/safety-results", json={
         "result": "obstacle", "source": "model", "object_name": "纸箱",

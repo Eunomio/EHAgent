@@ -56,6 +56,20 @@ class ProductStore:
                     received_at TEXT NOT NULL,
                     UNIQUE(device_serial, occurred_at, event_type)
                 );
+                CREATE TABLE IF NOT EXISTS sleep_night_awakening (
+                    id TEXT PRIMARY KEY, sleep_report_id TEXT,
+                    demo_dataset_id TEXT, source TEXT NOT NULL,
+                    detected_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                    state TEXT NOT NULL, attention TEXT NOT NULL,
+                    snapshot_status TEXT NOT NULL, sleep_session_ended INTEGER NOT NULL,
+                    baseline_json TEXT NOT NULL, reasons_json TEXT NOT NULL,
+                    reason_codes_json TEXT NOT NULL, guidance_json TEXT NOT NULL,
+                    message TEXT NOT NULL, disclaimer TEXT NOT NULL,
+                    algorithm_version TEXT NOT NULL, created_at TEXT NOT NULL,
+                    resolved_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ix_sleep_night_awakening_latest
+                    ON sleep_night_awakening(source, detected_at DESC);
                 CREATE TABLE IF NOT EXISTS sleep_sync_run (
                     id TEXT PRIMARY KEY, target_date TEXT NOT NULL,
                     source TEXT NOT NULL, status TEXT NOT NULL,
@@ -367,12 +381,20 @@ class ProductStore:
                     "AND demo_dataset_id=?",
                     (dataset_id,),
                 )
+                db.execute(
+                    "DELETE FROM sleep_night_awakening WHERE source='demo_generated' "
+                    "AND demo_dataset_id=?",
+                    (dataset_id,),
+                )
             else:
                 rows = db.execute(
                     "SELECT id FROM sleep_summary WHERE source='demo_generated'"
                 ).fetchall()
                 result = db.execute(
                     "DELETE FROM sleep_summary WHERE source='demo_generated'"
+                )
+                db.execute(
+                    "DELETE FROM sleep_night_awakening WHERE source='demo_generated'"
                 )
             ids = [row["id"] for row in rows]
             if ids:
@@ -434,6 +456,137 @@ class ProductStore:
                     for item in events
                 ),
             )
+
+    def add_night_awakening(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist one assessment snapshot; demo activation is idempotent per dataset."""
+
+        dataset_id = payload.get("demo_dataset_id")
+        source = payload["event"]["source"]
+        with self._connect() as db:
+            if source == "demo_generated" and dataset_id:
+                existing = db.execute(
+                    "SELECT * FROM sleep_night_awakening "
+                    "WHERE source='demo_generated' AND demo_dataset_id=? "
+                    "ORDER BY detected_at DESC LIMIT 1",
+                    (dataset_id,),
+                ).fetchone()
+                if existing:
+                    return self._decode_night_awakening(dict(existing))
+
+            record = {
+                "id": str(uuid4()),
+                "sleep_report_id": payload.get("sleep_report_id"),
+                "demo_dataset_id": dataset_id,
+                "source": source,
+                "detected_at": payload["event"]["detected_at"],
+                "expires_at": payload["expires_at"],
+                "state": payload["state"],
+                "attention": payload["attention"],
+                "snapshot_status": payload["snapshot_status"],
+                "sleep_session_ended": int(bool(payload["sleep_session_ended"])),
+                "baseline_json": json.dumps(payload["baseline"], ensure_ascii=False),
+                "reasons_json": json.dumps(payload["reasons"], ensure_ascii=False),
+                "reason_codes_json": json.dumps(
+                    payload.get("reason_codes", []), ensure_ascii=False
+                ),
+                "guidance_json": json.dumps(payload["guidance"], ensure_ascii=False),
+                "message": payload["message"],
+                "disclaimer": payload["disclaimer"],
+                "algorithm_version": payload["algorithm_version"],
+                "created_at": now_iso(),
+                "resolved_at": payload.get("resolved_at"),
+            }
+            db.execute(
+                "INSERT INTO sleep_night_awakening("
+                + ",".join(record)
+                + ") VALUES ("
+                + ",".join(f":{key}" for key in record)
+                + ")",
+                record,
+            )
+        return self.night_awakening_by_id(record["id"]) or payload
+
+    def night_awakening_by_id(self, record_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM sleep_night_awakening WHERE id=?", (record_id,)
+            ).fetchone()
+        return self._decode_night_awakening(dict(row)) if row else None
+
+    def latest_night_awakening(
+        self, *, source: str, demo_dataset_id: str | None = None
+    ) -> dict[str, Any] | None:
+        conditions = ["source=?"]
+        values: list[Any] = [source]
+        if source == "demo_generated":
+            conditions.append("demo_dataset_id=?")
+            values.append(demo_dataset_id)
+        else:
+            conditions.append("demo_dataset_id IS NULL")
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM sleep_night_awakening WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY detected_at DESC LIMIT 1",
+                values,
+            ).fetchone()
+            if not row:
+                return None
+            record = dict(row)
+            if record["state"] == "active":
+                expires_at = datetime.fromisoformat(record["expires_at"])
+                if datetime.now().astimezone() >= expires_at:
+                    resolved_at = record["expires_at"]
+                    db.execute(
+                        "UPDATE sleep_night_awakening SET state='resolved',resolved_at=? "
+                        "WHERE id=?",
+                        (resolved_at, record["id"]),
+                    )
+                    record["state"] = "resolved"
+                    record["resolved_at"] = resolved_at
+        return self._decode_night_awakening(record)
+
+    def resolve_night_awakening(
+        self, *, source: str, demo_dataset_id: str | None = None
+    ) -> dict[str, Any] | None:
+        latest = self.latest_night_awakening(
+            source=source, demo_dataset_id=demo_dataset_id
+        )
+        if latest is None:
+            return None
+        resolved_at = now_iso()
+        with self._connect() as db:
+            db.execute(
+                "UPDATE sleep_night_awakening SET state='resolved',resolved_at=? WHERE id=?",
+                (resolved_at, latest["id"]),
+            )
+        return self.night_awakening_by_id(latest["id"])
+
+    def delete_demo_night_awakening(self, dataset_id: str) -> int:
+        with self._connect() as db:
+            result = db.execute(
+                "DELETE FROM sleep_night_awakening "
+                "WHERE source='demo_generated' AND demo_dataset_id=?",
+                (dataset_id,),
+            )
+        return int(result.rowcount)
+
+    @staticmethod
+    def _decode_night_awakening(record: dict[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        result["sleep_session_ended"] = bool(result["sleep_session_ended"])
+        result["baseline"] = json.loads(result.pop("baseline_json"))
+        result["reasons"] = json.loads(result.pop("reasons_json"))
+        result["reason_codes"] = json.loads(result.pop("reason_codes_json"))
+        result["guidance"] = json.loads(result.pop("guidance_json"))
+        result["event"] = {
+            "type": "out_of_bed",
+            "detected_at": result["detected_at"],
+            "source": result["source"],
+            "reliable": result["attention"] != "insufficient"
+            or "event_unreliable" not in result["reason_codes"],
+        }
+        return result
 
     @staticmethod
     def _decode_sleep(record: dict[str, Any]) -> dict[str, Any]:
