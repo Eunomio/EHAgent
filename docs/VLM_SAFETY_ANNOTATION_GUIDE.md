@@ -1,18 +1,21 @@
-# 居家走道视觉标注规范 V2
+# 居家走道 VLM 离线评测标注规范 V2
+
+本文档用于给 C6c 试验图片制作语义真值，评估视觉大模型和固定规则的判断效果。当前产品不会使用这些标签训练 RTMDet 等传统目标检测模型，也不会在运行时读取本地标签文件。
+
+标注页面中的畅通参考图和通道区域只帮助离线脚本统一比较同一摄像头的图片。住户日常使用时，后台会自动识别通道参考画面，无需手动打开此页面。
 
 ## 1. 使用方式
 
 在项目根目录运行 `scripts/start-annotation.ps1`，然后打开：
 
 - 图片标注：<http://127.0.0.1:8010>
-- 设置过道区域：<http://127.0.0.1:8010/walkway>
+- 设置离线评测用过道区域：<http://127.0.0.1:8010/walkway>
 
-图片标注保存在 `evidence/c6c-collection/labels.json` 和 `labels.jsonl`，过道区域保存在
-`evidence/c6c-collection/walkway.json`。V1 标签已经单独备份；V2 页面从第一张图片重新标注。
+图片标注保存在 `evidence/c6c-collection/labels.json` 和 `labels.jsonl`，离线评测用过道区域保存在 `evidence/c6c-collection/walkway.json`。
 
 ## 2. 标注原则
 
-V2 先记录画面中可以观察到的事实，再由程序计算风险等级和建议动作。
+V2 先记录画面中可以观察到的事实，再由离线工具计算风险等级和建议动作。
 
 人工判断：画面质量、是否有障碍物、障碍物类型、物品所在区域、占用比例、通行影响、绊倒风险和判断依据。
 
@@ -26,7 +29,7 @@ V2 先记录画面中可以观察到的事实，再由程序计算风险等级�
 | --- | --- | --- |
 | `sample_id` | 字符串 | 页面自动生成的样本编号 |
 | `image_path` | 字符串 | 当前截图路径 |
-| `baseline_path` | 字符串 | 对应畅通基准图 |
+| `baseline_path` | 字符串 | 离线评测时用于比较的同视角畅通参考图 |
 | `lighting` | 枚举 | 光线条件 |
 | `visibility` | 枚举 | 画面质量 |
 | `hazard_present` | 布尔值或 `null` | 有障碍、无障碍或无法确认 |
@@ -136,15 +139,17 @@ V2 先记录画面中可以观察到的事实，再由程序计算风险等级�
 
 纸箱位于行走路线中央时通常选择 `possible`；电线横跨主要路线通常选择 `obvious`。
 
-## 12. 自动风险规则
+## 12. 离线标签风险规则
 
-程序按照以下顺序计算，较高等级优先：
+标注工具按照以下顺序生成标签中的 `risk_level` 和 `recommended_action`，较高等级优先：
 
 - `insufficient`：画面无法判断，或无法确认是否有障碍物。动作 `recheck`。
 - `high`：通行困难/堵塞、占用超过一半、明显绊倒风险，或同图存在两种以上障碍物。动作 `remind_resident`。
 - `medium`：需要绕开、横向占用四分之一至一半、存在潜在绊倒风险、物品位于中央，或纵向超过一半且通道持续变窄。动作 `create_task`。
 - `low`：通道轻微变窄、占用少于四分之一、物品位于边界/内侧，或画面质量有限。动作 `recheck`。
 - `clear`：画面清晰且无障碍；或物品在过道外且没有影响。动作 `record_clear`。
+
+产品自动监测还会使用 VLM 返回的风险框与近处通道开口计算重叠比例。风险框覆盖通道宽度 25% 以上时至少按需要整改处理，覆盖 50% 以上时按严重风险处理。模型文字与几何位置冲突时，产品使用重叠结果校正最终状态。因此，离线标签规则一致率和产品最终风险评测需要分别记录。
 
 ## 13. 完整示例
 
@@ -166,7 +171,7 @@ V2 先记录画面中可以观察到的事实，再由程序计算风险等级�
 {"sample_id":"c6c01_dim_clear_0001","image_path":"c6c01/c6c01_dim_clear_20260820_190000_000.jpg","baseline_path":"c6c01/c6c01_day_baseline_20260820_093000_000.jpg","lighting":"dim","visibility":"insufficient","hazard_present":null,"hazard_types":[],"position_zone":"unknown","walkway_occupation":"unknown","walkway_length_occupation":"unknown","passage_effect":"unknown","trip_risk":"unknown","risk_level":"insufficient","recommended_action":"recheck","reason":"画面过暗，无法确认走道内是否存在障碍物。"}
 ```
 
-## 14. 独立试跑视觉大模型
+## 14. 独立评测视觉大模型
 
 重新完成 V2 标注后运行：
 
@@ -174,5 +179,6 @@ V2 先记录画面中可以观察到的事实，再由程序计算风险等级�
 .\.venv\Scripts\python.exe .\scripts\test-vlm-safety.py --model ecnu-plus --all
 ```
 
-脚本默认使用 ECNU `chat/completions` 多模态接口和 `response_format=json_schema`，结果保存在
-`evidence/vlm-experiments/<时间>/results.json`。没有障碍物或无法确认时，不评测位置、占用、通行影响和绊倒风险。
+脚本默认使用 ECNU `chat/completions` 多模态接口和 `response_format=json_schema`，读取 `.env` 中的 `EH_LLM_API_KEY`、`EH_LLM_API_BASE` 和 `EH_LLM_MODEL`；`--model` 可以临时覆盖模型名。结果保存在 `evidence/vlm-experiments/<时间>/results.json`。
+
+没有障碍物或无法确认时，不评测位置、占用、通行影响和绊倒风险。评测结果以总体字段一致率和各字段一致率为主，不要求每张图片所有字段完全相同才计为有效；高风险漏检和边缘安全物品误整改需要单独统计。
