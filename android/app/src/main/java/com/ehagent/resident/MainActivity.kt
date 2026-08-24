@@ -784,7 +784,11 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                 vm::toggleNightAwakeningExpanded,
             )
         } else {
-            Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF303B73))) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF303B73)),
+            ) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("昨晚共睡眠", color = Color.White.copy(.75f), fontSize = 17.sp)
                     Text("${sleep.duration / 60} 小时 ${sleep.duration % 60} 分钟", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Bold)
