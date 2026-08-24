@@ -18,7 +18,7 @@
 | 获取C6c安卓SDK播放会话 | `POST /api/v1/devices/c6c/sdk-session` |
 | 睡眠伴侣连通测试 | `POST /api/v1/devices/sleep/test` |
 | 同步萤石单日睡眠摘要 | `POST /api/v1/devices/sleep/sync?target_date=YYYY-MM-DD` |
-| 导入本地睡眠演示数据（仅开发环境） | `POST /api/v1/devices/sleep/demo` |
+| 导入仓库内置的 8 晚睡眠演示数据（仅开发环境） | `POST /api/v1/devices/sleep/demo` |
 | 清除本地睡眠演示数据（仅开发环境） | `DELETE /api/v1/devices/sleep/demo` |
 | 激活演示起夜关注（仅开发环境） | `POST /api/v1/devices/sleep/demo/night-awakening` |
 | 重置演示起夜关注（仅开发环境） | `DELETE /api/v1/devices/sleep/demo/night-awakening` |
@@ -56,6 +56,8 @@
 正式睡眠报告使用`device_serial + external_report_id`识别平台中的唯一报告。重复推送会更新原记录。配置`EH_SLEEP_WEBHOOK_TOKEN`后，请求必须携带`X-EH-Sleep-Token`。萤石设备报告缺少`device_serial`返回422，与后端绑定的设备序列号不一致返回409。住户接口不会返回设备序列号和平台报告编号。
 
 `GET /api/v1/resident/sleep` 返回最新睡眠、同来源历史、个人基线、离床数据状态、最近同步状态和可选的 `night_awakening`。个人基线状态为 `no_data`、`baseline_building`、`close_to_baseline`、`changed` 或 `insufficient`；指标包含当前值、个人中位数、差值和有效晚数。演示数据与真实设备数据不会混合计算。
+
+演示睡眠夹具保存在 `app/sleep/demo_sleep_20260824.json` 并随源码提交。Android 在开发环境首次连接空数据库时只尝试自动导入一次；用户手动清除后，普通刷新不会再次导入。真实数据存在时，报告优先读取真实数据。
 
 `night_awakening.state` 表示事件生命周期，可为 `waiting`、`active` 或 `resolved`；`attention` 可为 `routine_care`、`extra_care` 或 `insufficient`。对象同时返回事件时间、快照状态、逐项基线差异、建议、算法版本和边界说明。该字段只提供基于睡眠偏离的预防性关注，不表示跌倒概率。旧客户端可以忽略整个可选对象。
 

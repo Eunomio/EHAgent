@@ -1,6 +1,5 @@
 import json
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -59,7 +58,7 @@ async def load_sleep_demo(
 ) -> dict[str, Any]:
     if settings.app_env == "production":
         raise HTTPException(403, "生产环境不能导入演示睡眠数据")
-    records = import_demo_dataset(store, Path(settings.database_path).resolve().parent)
+    records = import_demo_dataset(store)
     latest = records[-1]
     copy, source = await llm.analyze_sleep(latest, records[-2::-1][:7])
     store.add_llm_output(

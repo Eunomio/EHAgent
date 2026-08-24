@@ -45,6 +45,13 @@ class NightAwakeningTest {
     }
 
     @Test
+    fun `empty first install attempts demo import only once`() {
+        assertTrue(shouldAutoLoadSleepDemo(sleepDuration = null, alreadyAttempted = false))
+        assertFalse(shouldAutoLoadSleepDemo(sleepDuration = null, alreadyAttempted = true))
+        assertFalse(shouldAutoLoadSleepDemo(sleepDuration = 440, alreadyAttempted = false))
+    }
+
+    @Test
     fun `optional reason fields and long copy are retained`() {
         val longMessage = "这是一段用于验证较长中文提示能够完整解析并交给界面换行展示的文字。"
         val result = JSONObject(

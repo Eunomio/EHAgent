@@ -104,7 +104,7 @@ POST /api/v1/devices/sleep/sync?target_date=YYYY-MM-DD
 
 后端默认在北京时间 10:00 同步前一晚，并在启动时补拉最近三天。可用 `EH_SLEEP_AUTO_SYNC_ENABLED`、`EH_SLEEP_SYNC_HOUR`、`EH_SLEEP_SYNC_MINUTE`、`EH_SLEEP_SYNC_LOOKBACK_DAYS` 和 `EH_SLEEP_SYNC_UTC_OFFSET_HOURS` 调整。页面读取本地数据库；外部接口失败不会阻塞既有报告。
 
-本地开发环境提供 `POST /api/v1/devices/sleep/demo` 和 `DELETE /api/v1/devices/sleep/demo`。前者生成 8 晚固定演示记录，后者只删除对应 `demo_dataset_id`。演示数据来源为 `demo_generated`，基线只在同一数据集内计算；生产环境拒绝这两个操作。
+本地开发环境提供 `POST /api/v1/devices/sleep/demo` 和 `DELETE /api/v1/devices/sleep/demo`。前者导入随源码提交的 `app/sleep/demo_sleep_20260824.json`（8 晚固定、非敏感记录），后者只删除对应 `demo_dataset_id`。演示数据来源为 `demo_generated`，基线只在同一数据集内计算；生产环境拒绝这两个操作。Android 新安装在首次连接空数据库时自动尝试导入一次，用户手动清除后不会因页面刷新而自动恢复，仍可在“我的”页面主动重新导入。
 
 个人基线使用当前夜之前最多 14 晚有效记录，至少 7 晚后启用。睡眠时长、平均心率和平均呼吸率分别计算中位数与 MAD，仅描述是否与近期个人水平有变化。当前产品不输出跌倒风险、行动能力、认知状态或心理健康预测。
 

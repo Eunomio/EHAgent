@@ -1,7 +1,8 @@
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.sleep.demo import demo_records
+from app.sleep.demo import DEMO_DATASET_ID, DEMO_FIXTURE_PATH, demo_records
 from app.sleep.night_awakening import (
     ALGORITHM_VERSION,
     assess_night_awakening,
@@ -12,6 +13,17 @@ from app.store import ProductStore
 
 def history() -> list[dict[str, object]]:
     return list(reversed(demo_records()))
+
+
+def test_demo_sleep_fixture_is_packaged_with_source() -> None:
+    payload = json.loads(DEMO_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+    assert payload["dataset_id"] == DEMO_DATASET_ID
+    assert payload["source"] == "demo_generated"
+    assert len(payload["records"]) == 8
+    assert payload["records"][-1]["duration_minutes"] == 330
+    assert payload["records"][-1]["heart_rate"] == 70.0
+    assert payload["records"][-1]["respiratory_rate"] == 18.0
 
 
 def assess(records: list[dict[str, object]], **overrides: object) -> dict[str, object]:

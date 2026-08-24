@@ -83,6 +83,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         get() = preferences.getString("night_awakening_auto_expanded_id", null)
         set(value) { preferences.edit().putString("night_awakening_auto_expanded_id", value).apply() }
 
+    private var sleepDemoSeedAttempted: Boolean
+        get() = preferences.getBoolean("sleep_demo_seed_attempted", false)
+        set(value) { preferences.edit().putBoolean("sleep_demo_seed_attempted", value).apply() }
+
     private var savedBaselineNeedsRefresh: Boolean
         get() = preferences.getBoolean("safety_baseline_needs_refresh", false)
         set(value) { preferences.edit().putBoolean("safety_baseline_needs_refresh", value).apply() }
@@ -101,9 +105,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(loading = true, error = null, notice = null)
         runCatching {
             val api = ProductApi(backendUrl)
-            val dashboard = api.dashboard()
-            val devices = api.devices()
+            var dashboard = api.dashboard()
+            var devices = api.devices()
             val settings = api.settings()
+            if (shouldAutoLoadSleepDemo(dashboard.sleep.duration, sleepDemoSeedAttempted)) {
+                sleepDemoSeedAttempted = true
+                runCatching { api.loadSleepDemo() }.onSuccess {
+                    dashboard = api.dashboard()
+                    devices = api.devices()
+                }
+            } else if (!sleepDemoSeedAttempted) {
+                sleepDemoSeedAttempted = true
+            }
             val safetyBaseline = runCatching { api.safetyBaseline() }
                 .getOrDefault(_state.value.safetyBaseline)
             val latestSafetyAnalysis = runCatching { api.latestSafetyAnalysis() }
@@ -544,6 +557,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(sleepActionLoading = true, error = null)
         runCatching { ProductApi(backendUrl).loadSleepDemo() }
             .onSuccess {
+                sleepDemoSeedAttempted = true
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
                     notice = "8晚演示睡眠数据已导入",
