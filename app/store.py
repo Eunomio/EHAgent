@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -29,11 +29,12 @@ class ProductStore:
                     id TEXT PRIMARY KEY, title TEXT NOT NULL, location TEXT NOT NULL,
                     explanation TEXT NOT NULL, suggestion TEXT NOT NULL,
                     status TEXT NOT NULL, source TEXT NOT NULL, evidence_url TEXT,
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, remind_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS safety_check (
                     id TEXT PRIMARY KEY, result TEXT NOT NULL, source TEXT NOT NULL,
-                    detail TEXT NOT NULL, evidence_url TEXT, occurred_at TEXT NOT NULL
+                    detail TEXT NOT NULL, evidence_url TEXT, occurred_at TEXT NOT NULL,
+                    analysis_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE TABLE IF NOT EXISTS sleep_summary (
                     id TEXT PRIMARY KEY, sleep_start TEXT NOT NULL, sleep_end TEXT NOT NULL,
@@ -122,6 +123,8 @@ class ProductStore:
                 """
             )
             self._migrate_sleep_summary(db)
+            self._migrate_safety_check(db)
+            self._migrate_safety_task(db)
             db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_sleep_report_source "
                 "ON sleep_summary(device_serial, external_report_id) "
@@ -162,6 +165,21 @@ class ProductStore:
             if name not in existing:
                 db.execute(f"ALTER TABLE sleep_summary ADD COLUMN {name} {definition}")
 
+    @staticmethod
+    def _migrate_safety_check(db: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in db.execute("PRAGMA table_info(safety_check)")}
+        if "analysis_json" not in existing:
+            db.execute(
+                "ALTER TABLE safety_check ADD COLUMN analysis_json "
+                "TEXT NOT NULL DEFAULT '{}'"
+            )
+
+    @staticmethod
+    def _migrate_safety_task(db: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in db.execute("PRAGMA table_info(safety_task)")}
+        if "remind_at" not in existing:
+            db.execute("ALTER TABLE safety_task ADD COLUMN remind_at TEXT")
+
     def settings(self) -> dict[str, str]:
         with self._connect() as db:
             return {r["key"]: r["value"] for r in db.execute("SELECT key,value FROM app_setting")}
@@ -174,11 +192,20 @@ class ProductStore:
             )
         return self.settings()
 
-    def latest_task(self) -> dict[str, Any] | None:
+    def latest_task(self, include_deferred: bool = False) -> dict[str, Any] | None:
         with self._connect() as db:
+            if include_deferred:
+                where = "status NOT IN ('resolved','dismissed')"
+                parameters: tuple[str, ...] = ()
+            else:
+                where = (
+                    "status NOT IN ('resolved','dismissed') "
+                    "AND (status!='deferred' OR remind_at IS NULL OR remind_at<=?)"
+                )
+                parameters = (now_iso(),)
             row = db.execute(
-                "SELECT * FROM safety_task WHERE status NOT IN ('resolved','dismissed') "
-                "ORDER BY updated_at DESC LIMIT 1"
+                f"SELECT * FROM safety_task WHERE {where} ORDER BY updated_at DESC LIMIT 1",
+                parameters,
             ).fetchone()
         return dict(row) if row else None
 
@@ -188,16 +215,28 @@ class ProductStore:
                 "SELECT * FROM safety_check ORDER BY occurred_at DESC,rowid DESC LIMIT ?", (limit,)
             )]
 
+    def safety_check(self, check_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM safety_check WHERE id=?", (check_id,)).fetchone()
+        return dict(row) if row else None
+
     def add_safety_check(
-        self, result: str, source: str, detail: str, evidence_url: str | None = None
+        self,
+        result: str,
+        source: str,
+        detail: str,
+        evidence_url: str | None = None,
+        analysis: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         record = {
             "id": str(uuid4()), "result": result, "source": source, "detail": detail,
             "evidence_url": evidence_url, "occurred_at": now_iso(),
+            "analysis_json": json.dumps(analysis or {}, ensure_ascii=False),
         }
         with self._connect() as db:
             db.execute(
-                "INSERT INTO safety_check VALUES (:id,:result,:source,:detail,:evidence_url,:occurred_at)",
+                "INSERT INTO safety_check(id,result,source,detail,evidence_url,occurred_at,analysis_json) "
+                "VALUES (:id,:result,:source,:detail,:evidence_url,:occurred_at,:analysis_json)",
                 record,
             )
         return record
@@ -206,7 +245,7 @@ class ProductStore:
         self, title: str, location: str, explanation: str, suggestion: str,
         source: str, evidence_url: str | None = None,
     ) -> dict[str, Any]:
-        existing = self.latest_task()
+        existing = self.latest_task(include_deferred=True)
         timestamp = now_iso()
         if existing and existing["title"] == title and existing["location"] == location:
             with self._connect() as db:
@@ -221,11 +260,14 @@ class ProductStore:
             "explanation": explanation, "suggestion": suggestion, "status": "open",
             "source": source, "evidence_url": evidence_url,
             "created_at": timestamp, "updated_at": timestamp,
+            "remind_at": None,
         }
         with self._connect() as db:
             db.execute(
-                "INSERT INTO safety_task VALUES (:id,:title,:location,:explanation,:suggestion,"
-                ":status,:source,:evidence_url,:created_at,:updated_at)", record,
+                "INSERT INTO safety_task(id,title,location,explanation,suggestion,status,source,"
+                "evidence_url,created_at,updated_at,remind_at) VALUES (:id,:title,:location,"
+                ":explanation,:suggestion,:status,:source,:evidence_url,:created_at,:updated_at,"
+                ":remind_at)", record,
             )
         return record
 
@@ -234,10 +276,15 @@ class ProductStore:
             "done": "rescan_pending", "later": "deferred", "not_risk": "dismissed",
             "pause": "paused", "need_help": "waiting_family",
         }
+        remind_at = (
+            (datetime.now().astimezone() + timedelta(minutes=30)).isoformat(timespec="seconds")
+            if action == "later"
+            else None
+        )
         with self._connect() as db:
             db.execute(
-                "UPDATE safety_task SET status=?,updated_at=? WHERE id=?",
-                (mapping[action], now_iso(), task_id),
+                "UPDATE safety_task SET status=?,updated_at=?,remind_at=? WHERE id=?",
+                (mapping[action], now_iso(), remind_at, task_id),
             )
             row = db.execute("SELECT * FROM safety_task WHERE id=?", (task_id,)).fetchone()
         if row and action == "need_help":
@@ -254,7 +301,8 @@ class ProductStore:
     ) -> dict[str, Any] | None:
         with self._connect() as db:
             db.execute(
-                "UPDATE safety_task SET title=?,explanation=?,suggestion=?,status=?,updated_at=? "
+                "UPDATE safety_task SET title=?,explanation=?,suggestion=?,status=?,updated_at=?,"
+                "remind_at=NULL "
                 "WHERE id=?",
                 (title, explanation, suggestion, status, now_iso(), task_id),
             )

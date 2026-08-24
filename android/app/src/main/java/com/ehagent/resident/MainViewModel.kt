@@ -1,7 +1,17 @@
 package com.ehagent.resident
 
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.os.Build
 import android.os.SystemClock
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -11,6 +21,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.time.Duration
+import java.time.OffsetDateTime
 
 data class UiState(
     val loading: Boolean = true,
@@ -41,6 +53,9 @@ data class UiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val BASELINE_MOVE_THRESHOLD_MS = 1_200L
+        private const val SAFETY_CHANNEL_ID = "walkway_safety_alerts"
+        private const val SAFETY_NOTIFICATION_ID = 4102
+        private const val SAFETY_SPEECH_RETRY_MS = 60_000L
     }
 
     private val preferences = application.getSharedPreferences("connection", 0)
@@ -49,6 +64,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val cameraMoveMutex = Mutex()
     private val safetyRefreshMutex = Mutex()
     private val cameraMoveStartedAt = mutableMapOf<CameraDirection, Long>()
+    private var safetyPlayer: MediaPlayer? = null
+    private var safetySpeechInFlightCheckId: String? = null
+    private var safetySpeechLastAttemptCheckId: String? = null
+    private var safetySpeechLastAttemptAtMs: Long = 0L
     var backendUrl: String
         get() = preferences.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
         private set(value) { preferences.edit().putString("backend_url", value.trimEnd('/')).apply() }
@@ -112,6 +131,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 nightAwakeningExpanded = if (autoExpand) true else nightAwakeningExpanded,
                 error = null,
             )
+            latestSafetyAnalysis?.let(::handleSafetyAlert)
         }.onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "暂时无法连接") }
     }
 
@@ -131,7 +151,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun taskAction(action: String) = viewModelScope.launch {
         val id = _state.value.dashboard.safety.taskId ?: return@launch
         runCatching { ProductApi(backendUrl).taskAction(id, action) }
-            .onSuccess { _state.value = _state.value.copy(notice = "已记录"); refresh() }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    notice = if (action == "later") "将在30分钟后再次提醒" else "已记录",
+                )
+                refresh()
+            }
             .onFailure { _state.value = _state.value.copy(error = it.message) }
     }
 
@@ -144,6 +169,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // temporary failure in dashboard or baseline never hides an automatic check.
             runCatching { api.latestSafetyAnalysis() }.onSuccess { analysis ->
                 _state.value = _state.value.copy(safetyAnalysis = analysis)
+                analysis?.let(::handleSafetyAlert)
             }
             runCatching { api.dashboard() }.onSuccess { dashboard ->
                 _state.value = _state.value.copy(dashboard = dashboard)
@@ -293,6 +319,146 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
     }
 
+    fun replaySafetySpeech() {
+        val analysis = _state.value.safetyAnalysis ?: return
+        val speechUrl = analysis.speechUrl ?: return
+        viewModelScope.launch { playSafetySpeech(analysis, speechUrl, reportFailure = true) }
+    }
+
+    private fun handleSafetyAlert(analysis: SafetyAnalysis) {
+        val checkId = analysis.checkId ?: return
+        if (
+            analysis.riskLevel !in setOf("medium", "high") ||
+            (!isRecentSafetyResult(analysis.checkedAt) && _state.value.dashboard.safety.taskId == null)
+        ) return
+
+        if (
+            analysis.notificationRequired &&
+            preferences.getString("last_safety_alert_check", null) != checkId
+        ) {
+            preferences.edit().putString("last_safety_alert_check", checkId).apply()
+            showSafetyNotification(analysis)
+        }
+        val speechUrl = analysis.speechUrl
+        val now = SystemClock.elapsedRealtime()
+        val speechRetryReady = safetySpeechLastAttemptCheckId != checkId ||
+            now - safetySpeechLastAttemptAtMs >= SAFETY_SPEECH_RETRY_MS
+        if (
+            analysis.speechAutoPlay &&
+            speechUrl != null &&
+            preferences.getString("last_safety_speech_check", null) != checkId &&
+            safetySpeechInFlightCheckId != checkId &&
+            speechRetryReady
+        ) {
+            safetySpeechInFlightCheckId = checkId
+            safetySpeechLastAttemptCheckId = checkId
+            safetySpeechLastAttemptAtMs = now
+            viewModelScope.launch {
+                val played = playSafetySpeech(analysis, speechUrl, reportFailure = false)
+                if (played) {
+                    preferences.edit().putString("last_safety_speech_check", checkId).apply()
+                }
+                if (safetySpeechInFlightCheckId == checkId) safetySpeechInFlightCheckId = null
+            }
+        }
+    }
+
+    private fun isRecentSafetyResult(value: String): Boolean = runCatching {
+        val age = Duration.between(OffsetDateTime.parse(value), OffsetDateTime.now()).toMinutes()
+        age in 0..15
+    }.getOrDefault(false)
+
+    private fun showSafetyNotification(analysis: SafetyAnalysis) {
+        val application = getApplication<Application>()
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(application, android.Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        val manager = application.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                SAFETY_CHANNEL_ID,
+                "通道安全提醒",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply { description = "发现通道需要整理时提醒" },
+        )
+        val intent = Intent(application, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            application,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(application, SAFETY_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setColor(0xFFC73A31.toInt())
+            .setContentTitle(analysis.headline)
+            .setContentText(analysis.actionText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("${analysis.reason}\n${analysis.actionText}"))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        manager.notify(SAFETY_NOTIFICATION_ID, notification)
+    }
+
+    private suspend fun playSafetySpeech(
+        analysis: SafetyAnalysis,
+        speechUrl: String,
+        reportFailure: Boolean,
+    ): Boolean = runCatching {
+            val audio = ProductApi(backendUrl).safetySpeech(speechUrl)
+            val safeId = analysis.checkId.orEmpty().filter { it.isLetterOrDigit() || it == '-' }
+            val file = getApplication<Application>().cacheDir.resolve("safety-$safeId.mp3")
+            withContext(Dispatchers.IO) {
+                file.writeBytes(audio)
+                MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build(),
+                    )
+                    setDataSource(file.absolutePath)
+                    prepare()
+                }
+            }
+        }.fold(onSuccess = { player ->
+            safetyPlayer?.release()
+            safetyPlayer = player
+            player.setOnCompletionListener {
+                it.release()
+                if (safetyPlayer === it) safetyPlayer = null
+            }
+            player.setOnErrorListener { mediaPlayer, _, _ ->
+                mediaPlayer.release()
+                if (safetyPlayer === mediaPlayer) safetyPlayer = null
+                true
+            }
+            player.start()
+            if (reportFailure) {
+                _state.value = _state.value.copy(notice = "正在播报通道提醒")
+            }
+            true
+        }, onFailure = {
+            if (reportFailure) {
+                _state.value = _state.value.copy(
+                    safetyAnalysisError = "语音提醒暂时无法播放，请查看文字建议",
+                )
+            }
+            false
+        })
+
+    override fun onCleared() {
+        safetyPlayer?.release()
+        safetyPlayer = null
+        super.onCleared()
+    }
+
     fun setCameraMoving(direction: CameraDirection, moving: Boolean) = viewModelScope.launch {
         val session = _state.value.cameraSession ?: return@launch
         cameraMoveMutex.withLock {
@@ -314,6 +480,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun recordCameraMovement(direction: CameraDirection, moving: Boolean) {
         if (moving) {
             cameraMoveStartedAt[direction] = SystemClock.elapsedRealtime()
+            _state.value = _state.value.copy(
+                safetyAnalysis = _state.value.safetyAnalysis?.copy(hazardRegions = emptyList()),
+            )
             return
         }
         val startedAt = cameraMoveStartedAt.remove(direction) ?: return

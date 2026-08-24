@@ -85,6 +85,19 @@ data class SafetyAnalysis(
     val actionText: String,
     val reason: String,
     val checkedAt: String,
+    val checkId: String? = null,
+    val hazardRegions: List<HazardRegion> = emptyList(),
+    val notificationRequired: Boolean = false,
+    val speechAutoPlay: Boolean = false,
+    val speechUrl: String? = null,
+)
+data class HazardRegion(
+    val label: String,
+    val riskLevel: String,
+    val x1: Float,
+    val y1: Float,
+    val x2: Float,
+    val y2: Float,
 )
 data class AssistantSource(val title: String, val url: String)
 data class AssistantAction(val id: String, val label: String, val status: String)
@@ -237,13 +250,50 @@ class ProductApi(private val baseUrl: String) {
 
     private fun JSONObject.toSafetyAnalysis(flat: Boolean = false): SafetyAnalysis {
         val assessment = if (flat) this else getJSONObject("assessment")
+        val regions = optJSONArray("hazard_regions")?.mapObjects { region ->
+            HazardRegion(
+                label = region.optString("label", "风险位置"),
+                riskLevel = region.optString("risk_level", assessment.optString("risk_level")),
+                x1 = region.optDouble("x1", 0.0).toFloat().coerceIn(0f, 1000f),
+                y1 = region.optDouble("y1", 0.0).toFloat().coerceIn(0f, 1000f),
+                x2 = region.optDouble("x2", 0.0).toFloat().coerceIn(0f, 1000f),
+                y2 = region.optDouble("y2", 0.0).toFloat().coerceIn(0f, 1000f),
+            )
+        }?.filter { it.x2 - it.x1 >= 10f && it.y2 - it.y1 >= 10f }.orEmpty()
         return SafetyAnalysis(
             riskLevel = assessment.getString("risk_level"),
             headline = assessment.getString("headline"),
             actionText = assessment.getString("action_text"),
             reason = getString("reason"),
             checkedAt = getString("checked_at"),
+            checkId = optionalString("check_id"),
+            hazardRegions = regions,
+            notificationRequired = optBoolean("notification_required"),
+            speechAutoPlay = optBoolean("speech_auto_play"),
+            speechUrl = optionalString("speech_url"),
         )
+    }
+
+    suspend fun safetySpeech(path: String): ByteArray = withContext(Dispatchers.IO) {
+        val url = if (path.startsWith("http://") || path.startsWith("https://")) {
+            path
+        } else {
+            baseUrl.trimEnd('/') + "/" + path.trimStart('/')
+        }
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 60_000
+        connection.setRequestProperty("Accept", "audio/mpeg")
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            connection.disconnect()
+            throw IllegalStateException("语音提醒暂时不可用")
+        }
+        val audio = connection.inputStream.use { it.readBytes() }
+        connection.disconnect()
+        if (audio.size < 128) throw IllegalStateException("语音提醒内容无效")
+        audio
     }
 
     suspend fun sendHelp(message: String) = request("/api/v1/resident/help", "POST", JSONObject().put("request_type", "contact").put("message", message))

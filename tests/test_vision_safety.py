@@ -15,7 +15,10 @@ from app.vision.service import (
     VisionPrediction,
     VisionSafetyService,
     derive_assessment,
+    display_regions,
+    reconcile_walkway_geometry,
 )
+from app.vision.workflow import record_safety_result
 
 
 class FakeCamera:
@@ -25,6 +28,18 @@ class FakeCamera:
     async def download_picture(self, picture_url: str) -> tuple[bytes, str]:
         assert picture_url == "https://camera.test/capture.jpg"
         return b"jpeg-image" * 20, "image/jpeg"
+
+
+def test_model_image_is_resized_before_upload(tmp_path: Path) -> None:
+    output = BytesIO()
+    Image.new("RGB", (2000, 1000), (120, 120, 120)).save(output, format="JPEG")
+    service = VisionSafetyService(Settings(evidence_root=tmp_path, vlm_image_max_dimension=1280))
+
+    prepared, content_type = service._prepare_model_image(output.getvalue(), "image/jpeg")
+
+    with Image.open(BytesIO(prepared)) as image:
+        assert image.size == (1280, 640)
+    assert content_type == "image/jpeg"
 
 
 def test_long_item_at_side_does_not_create_cleanup_risk_by_itself() -> None:
@@ -417,6 +432,7 @@ def test_monitor_analyzes_only_after_a_change_persists(tmp_path: Path) -> None:
             vlm_api_base="https://chat.test/v1",
             vlm_change_threshold=0.08,
             vlm_change_confirmations=2,
+            ezviz_alarm_detection_enabled=False,
         )
         store = ProductStore(settings.database_path)
         store.initialize()
@@ -455,6 +471,146 @@ def test_monitor_analyzes_only_after_a_change_persists(tmp_path: Path) -> None:
         assert analyzed == 0
         assert await monitor.check_once() is True
         assert analyzed == 1
+        assert store.recent_checks(1)[0]["source"] == "camera_safety_auto"
+        monitor.next_alarm_poll_at = 0.0
+        assert await monitor.check_once() is False
+        assert analyzed == 1
+        await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_monitor_uses_ezviz_alarm_before_local_confirmations(tmp_path: Path) -> None:
+    def jpeg(gray: int) -> bytes:
+        output = BytesIO()
+        Image.new("RGB", (64, 36), (gray, gray, gray)).save(output, format="JPEG")
+        return output.getvalue()
+
+    class AlarmCamera:
+        configured = True
+
+        async def alarm_list(self, _start: int, _end: int) -> list[dict[str, object]]:
+            return [{"alarmId": "alarm-1", "deviceSerial": "C6C123", "channelNo": 1}]
+
+        async def capture(self) -> str:
+            return "https://camera.test/alarm.jpg"
+
+        async def download_picture(self, _picture_url: str) -> tuple[bytes, str]:
+            return jpeg(210), "image/jpeg"
+
+    async def scenario() -> None:
+        settings = Settings(
+            database_path=tmp_path / "alarm-monitor.db",
+            evidence_root=tmp_path / "alarm-evidence",
+            ezviz_device_serial="C6C123",
+            ezviz_access_token="test-token",
+            ezviz_alarm_detection_enabled=True,
+            ezviz_alarm_settle_seconds=0,
+            vlm_enabled=True,
+            vlm_api_key="test-key",
+            vlm_model="ecnu-plus",
+            vlm_api_base="https://chat.test/v1",
+            vlm_change_threshold=0.08,
+            vlm_change_confirmations=2,
+        )
+        store = ProductStore(settings.database_path)
+        store.initialize()
+        service = VisionSafetyService(settings)
+        service.root.mkdir(parents=True)
+        (service.root / "baseline.jpg").write_bytes(jpeg(30))
+        (service.root / "baseline.json").write_text(
+            json.dumps({"captured_at": "2026-08-24T12:00:00+08:00", "stale": False}),
+            encoding="utf-8",
+        )
+        analyzed = 0
+
+        async def fake_analyze_image(_image: bytes, _content_type: str) -> dict[str, object]:
+            nonlocal analyzed
+            analyzed += 1
+            return {
+                "checked_at": "2026-08-24T12:00:03+08:00",
+                "prediction": {},
+                "assessment": {
+                    "risk_level": "clear",
+                    "headline": "通道畅通",
+                    "action_text": "保持通道整洁",
+                },
+                "reason": "通道可以正常通过。",
+                "evidence_path": "alarm.jpg",
+            }
+
+        service.analyze_image = fake_analyze_image  # type: ignore[method-assign]
+        monitor = VisionChangeMonitor(settings, AlarmCamera(), service, store)  # type: ignore[arg-type]
+
+        assert await monitor.check_once() is True
+        assert analyzed == 1
+        assert store.recent_checks(1)[0]["source"] == "camera_safety_auto"
+        await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_monitor_falls_back_to_local_change_when_alarm_api_times_out(tmp_path: Path) -> None:
+    def jpeg(gray: int) -> bytes:
+        output = BytesIO()
+        Image.new("RGB", (64, 36), (gray, gray, gray)).save(output, format="JPEG")
+        return output.getvalue()
+
+    class TimeoutCamera:
+        configured = True
+
+        async def alarm_list(self, _start: int, _end: int) -> list[dict[str, object]]:
+            raise httpx.ReadTimeout("alarm timeout")
+
+        async def capture(self) -> str:
+            return "https://camera.test/fallback.jpg"
+
+        async def download_picture(self, _picture_url: str) -> tuple[bytes, str]:
+            return jpeg(210), "image/jpeg"
+
+    async def scenario() -> None:
+        settings = Settings(
+            database_path=tmp_path / "fallback-monitor.db",
+            evidence_root=tmp_path / "fallback-evidence",
+            ezviz_device_serial="C6C123",
+            ezviz_access_token="test-token",
+            ezviz_alarm_detection_enabled=True,
+            vlm_enabled=True,
+            vlm_api_key="test-key",
+            vlm_model="ecnu-plus",
+            vlm_api_base="https://chat.test/v1",
+            vlm_change_threshold=0.08,
+            vlm_change_confirmations=2,
+        )
+        store = ProductStore(settings.database_path)
+        store.initialize()
+        service = VisionSafetyService(settings)
+        service.root.mkdir(parents=True)
+        (service.root / "baseline.jpg").write_bytes(jpeg(30))
+        (service.root / "baseline.json").write_text(
+            json.dumps({"captured_at": "2026-08-24T12:00:00+08:00", "stale": False}),
+            encoding="utf-8",
+        )
+
+        async def fake_analyze_image(_image: bytes, _content_type: str) -> dict[str, object]:
+            return {
+                "checked_at": "2026-08-24T12:00:06+08:00",
+                "prediction": {},
+                "assessment": {
+                    "risk_level": "clear",
+                    "headline": "通道畅通",
+                    "action_text": "保持通道整洁",
+                },
+                "reason": "通道可以正常通过。",
+                "evidence_path": "fallback.jpg",
+            }
+
+        service.analyze_image = fake_analyze_image  # type: ignore[method-assign]
+        monitor = VisionChangeMonitor(settings, TimeoutCamera(), service, store)  # type: ignore[arg-type]
+
+        assert await monitor.check_once() is False
+        monitor.next_local_check_at = 0.0
+        assert await monitor.check_once() is True
         assert store.recent_checks(1)[0]["source"] == "camera_safety_auto"
         await service.close()
 
@@ -507,3 +663,201 @@ def test_monitor_identifies_baseline_automatically_when_missing(tmp_path: Path) 
         await service.close()
 
     asyncio.run(scenario())
+
+
+def test_risk_regions_are_sanitized_and_promoted_for_cleanup() -> None:
+    normalized = VisionSafetyService._normalize({
+        "visibility": "usable",
+        "hazard_present": True,
+        "hazard_types": ["carton"],
+        "position_zone": "center",
+        "walkway_occupation": "quarter_to_half",
+        "walkway_length_occupation": "under_quarter",
+        "passage_effect": "detour",
+        "trip_risk": "possible",
+        "reason": "纸箱伸入通道，经过时需要绕开。",
+        "hazard_regions": [
+            {
+                "hazard_type": "carton", "label": "纸箱", "risk_level": "low",
+                "x1": -20, "y1": 300, "x2": 680.5, "y2": 1100,
+            },
+            {"hazard_type": "box", "x1": 10, "y1": 10, "x2": 12, "y2": 12},
+        ],
+    })
+    prediction = VisionPrediction.model_validate(normalized)
+    assessment = derive_assessment(prediction)
+    regions = display_regions(prediction, assessment["risk_level"])
+
+    assert assessment["risk_level"] == "high"
+    assert "纸箱" in assessment["action_text"]
+    assert regions == [{
+        "hazard_type": "box", "label": "纸箱", "risk_level": "high",
+        "x1": 0, "y1": 300, "x2": 680, "y2": 1000,
+    }]
+
+
+def test_near_field_box_crossing_foot_path_requires_cleanup() -> None:
+    prediction = VisionPrediction.model_validate({
+        "visibility": "usable",
+        "hazard_present": True,
+        "hazard_types": ["box"],
+        "position_zone": "inner_side",
+        "walkway_occupation": "under_quarter",
+        "walkway_length_occupation": "under_quarter",
+        "passage_effect": "none",
+        "trip_risk": "possible",
+        "reason": "纸箱横跨画面近处的常用落脚区域。",
+        "hazard_regions": [{
+            "hazard_type": "box", "label": "纸箱", "risk_level": "low",
+            "x1": 260, "y1": 574, "x2": 720, "y2": 1000,
+        }],
+    })
+
+    assert derive_assessment(prediction)["risk_level"] == "high"
+
+
+def test_near_field_box_on_right_side_is_reconciled_with_walkway_geometry() -> None:
+    prediction = VisionPrediction.model_validate({
+        "visibility": "usable",
+        "hazard_present": True,
+        "hazard_types": ["box"],
+        "position_zone": "inner_side",
+        "walkway_occupation": "under_quarter",
+        "walkway_length_occupation": "under_quarter",
+        "passage_effect": "none",
+        "trip_risk": "none",
+        "reason": "纸箱位于走道边缘。",
+        "hazard_regions": [{
+            "hazard_type": "box", "label": "纸箱", "risk_level": "low",
+            "x1": 520, "y1": 510, "x2": 860, "y2": 990,
+        }],
+        "walkway_near_x1": 400,
+        "walkway_near_x2": 850,
+    })
+
+    reconciled = reconcile_walkway_geometry(prediction)
+
+    assert reconciled.position_zone == "center"
+    assert reconciled.walkway_occupation == "over_half"
+    assert reconciled.passage_effect == "difficult"
+    assert reconciled.trip_risk == "possible"
+    assert "通道中央落脚区域" in reconciled.reason
+    assert derive_assessment(prediction)["risk_level"] == "high"
+
+
+def test_automatic_red_alert_is_deduplicated_until_risk_worsens(tmp_path: Path) -> None:
+    settings = Settings(database_path=tmp_path / "alerts.db", evidence_root=tmp_path)
+    store = ProductStore(settings.database_path)
+    store.initialize()
+
+    def result(risk: str) -> dict[str, object]:
+        return {
+            "checked_at": "2026-08-24T10:00:00+08:00",
+            "prediction": {},
+            "assessment": {
+                "risk_level": risk,
+                "headline": "通道通行受阻" if risk == "high" else "通道需要整理",
+                "action_text": "请立即清理" if risk == "high" else "请整理通道",
+            },
+            "reason": "纸箱伸入常用落脚区域。",
+            "hazard_regions": [],
+            "evidence_path": "test.jpg",
+        }
+
+    first = record_safety_result(store, settings, result("medium"), "camera_safety_auto")
+    repeated = record_safety_result(store, settings, result("medium"), "camera_safety_auto")
+    worsened = record_safety_result(store, settings, result("high"), "camera_safety_auto")
+
+    assert first["notification_required"] is True
+    assert first["speech_auto_play"] is True
+    assert repeated["notification_required"] is False
+    assert repeated["speech_auto_play"] is False
+    assert worsened["notification_required"] is True
+    assert worsened["speech_auto_play"] is True
+
+
+def test_manual_red_check_requests_automatic_speech_without_push(tmp_path: Path) -> None:
+    settings = Settings(database_path=tmp_path / "manual-speech.db", evidence_root=tmp_path)
+    store = ProductStore(settings.database_path)
+    store.initialize()
+    result = {
+        "checked_at": "2026-08-24T10:00:00+08:00",
+        "prediction": {},
+        "assessment": {
+            "risk_level": "medium",
+            "headline": "通道需要整理",
+            "action_text": "请将纸箱移到通道外",
+        },
+        "reason": "纸箱伸入通道。",
+        "hazard_regions": [],
+        "evidence_path": "test.jpg",
+    }
+
+    recorded = record_safety_result(store, settings, result, "camera_safety")
+
+    assert recorded["notification_required"] is False
+    assert recorded["speech_auto_play"] is True
+
+
+def test_latest_analysis_exposes_regions_and_cached_tts_route(client) -> None:
+    async def fake_analyze(_camera) -> dict[str, object]:
+        return {
+            "checked_at": "2026-08-24T10:00:00+08:00",
+            "prediction": {},
+            "assessment": {
+                "risk_level": "high",
+                "headline": "通道通行受阻",
+                "action_text": "请立即将纸箱移到通道外",
+            },
+            "reason": "纸箱挡住常用行走路线。",
+            "hazard_regions": [{
+                "hazard_type": "box", "label": "纸箱", "risk_level": "high",
+                "x1": 100, "y1": 300, "x2": 650, "y2": 900,
+            }],
+            "evidence_path": "test.jpg",
+        }
+
+    async def fake_audio(check_id: str, text: str) -> bytes:
+        assert check_id
+        assert "纸箱" in text
+        return b"ID3" + b"audio" * 40
+
+    client.app.state.vision_safety.analyze = fake_analyze
+    client.app.state.vision_safety.warning_audio = fake_audio
+    created = client.post("/api/v1/devices/c6c/safety/analyze")
+    assert created.status_code == 200
+    latest = client.get("/api/v1/devices/c6c/safety/latest").json()["analysis"]
+    assert latest["hazard_regions"][0]["label"] == "纸箱"
+    assert latest["speech_auto_play"] is True
+    assert latest["speech_url"].endswith("/speech")
+    speech = client.get(latest["speech_url"])
+    assert speech.status_code == 200
+    assert speech.headers["content-type"].startswith("audio/mpeg")
+
+
+def test_later_action_hides_cleanup_until_reminder_time(client) -> None:
+    async def fake_analyze(_camera) -> dict[str, object]:
+        return {
+            "checked_at": "2026-08-24T10:00:00+08:00",
+            "prediction": {},
+            "assessment": {
+                "risk_level": "medium",
+                "headline": "通道需要整理",
+                "action_text": "请将纸箱移到通道外",
+            },
+            "reason": "纸箱伸入通道。",
+            "hazard_regions": [],
+            "evidence_path": "test.jpg",
+        }
+
+    client.app.state.vision_safety.analyze = fake_analyze
+    task_id = client.post("/api/v1/devices/c6c/safety/analyze").json()["task_id"]
+    response = client.post(
+        f"/api/v1/resident/safety/tasks/{task_id}/actions",
+        json={"action": "later"},
+    )
+    assert response.status_code == 200
+    assert client.get("/api/v1/resident/safety").json()["task"] is None
+    deferred = client.app.state.store.latest_task(include_deferred=True)
+    assert deferred["status"] == "deferred"
+    assert deferred["remind_at"]

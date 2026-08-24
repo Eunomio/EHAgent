@@ -8,6 +8,55 @@ from app.core.config import Settings
 from app.devices.ezviz import EzvizClient
 
 
+def test_alarm_list_uses_configured_device_and_normalizes_response() -> None:
+    async def scenario() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/api/lapp/alarm/device/list"
+            form = parse_qs(request.content.decode())
+            assert form["accessToken"] == ["test-token"]
+            assert form["deviceSerial"] == ["C6C123"]
+            assert form["startTime"] == ["1000"]
+            assert form["endTime"] == ["2000"]
+            return httpx.Response(200, json={
+                "code": "200",
+                "data": {"alarmList": [{"alarmId": "alarm-1", "alarmType": 10000}]},
+            })
+
+        settings = Settings(
+            ezviz_access_token="test-token",
+            ezviz_auto_token=False,
+            ezviz_device_serial="C6C123",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            alarms = await EzvizClient(settings, client).alarm_list(1000, 2000)
+        assert alarms == [{"alarmId": "alarm-1", "alarmType": 10000}]
+
+    asyncio.run(scenario())
+
+
+def test_alarm_list_falls_back_to_account_endpoint() -> None:
+    async def scenario() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/lapp/alarm/device/list":
+                return httpx.Response(200, json={"code": "60020", "msg": "unsupported"})
+            assert request.url.path == "/api/lapp/alarm/list"
+            return httpx.Response(200, json={
+                "code": "200",
+                "data": [{"alarmId": "alarm-2", "deviceSerial": "C6C123"}],
+            })
+
+        settings = Settings(
+            ezviz_access_token="test-token",
+            ezviz_auto_token=False,
+            ezviz_device_serial="C6C123",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            alarms = await EzvizClient(settings, client).alarm_list(1000, 2000)
+        assert alarms == [{"alarmId": "alarm-2", "deviceSerial": "C6C123"}]
+
+    asyncio.run(scenario())
+
+
 def test_live_address_uses_short_lived_hls_without_returning_credentials() -> None:
     async def scenario() -> None:
         def handler(request: httpx.Request) -> httpx.Response:

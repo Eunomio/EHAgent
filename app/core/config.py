@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     ezviz_device_serial: str = ""
     ezviz_channel_no: int = Field(default=1, ge=1)
     ezviz_verify_code: str = ""
+    ezviz_alarm_detection_enabled: bool = True
+    ezviz_alarm_poll_seconds: float = Field(default=2, ge=1, le=60)
+    ezviz_alarm_timeout_seconds: float = Field(default=2, ge=0.5, le=15)
+    ezviz_alarm_settle_seconds: float = Field(default=1, ge=0, le=15)
+    ezviz_alarm_fallback_seconds: float = Field(default=8, ge=5, le=600)
     sleep_provider: str = "disabled"
     sleep_device_name: str = "萤石无感睡眠伴侣"
     sleep_device_serial: str = ""
@@ -48,10 +53,16 @@ class Settings(BaseSettings):
     vlm_api_base: str = ""
     vlm_timeout_seconds: float = Field(default=60, ge=5, le=120)
     vlm_auto_check_enabled: bool = True
-    vlm_change_poll_seconds: float = Field(default=6, ge=5, le=300)
+    vlm_change_poll_seconds: float = Field(default=1, ge=1, le=300)
     vlm_change_threshold: float = Field(default=0.025, ge=0.005, le=0.5)
     vlm_change_confirmations: int = Field(default=2, ge=1, le=5)
-    vlm_change_cooldown_seconds: float = Field(default=30, ge=10, le=600)
+    vlm_change_cooldown_seconds: float = Field(default=10, ge=10, le=600)
+    vlm_image_max_dimension: int = Field(default=1280, ge=640, le=2048)
+    vlm_image_jpeg_quality: int = Field(default=85, ge=60, le=95)
+    tts_enabled: bool = True
+    tts_model: str = "ecnu-tts"
+    tts_voice: str = "liwa"
+    tts_speed: float = Field(default=0.9, ge=0.25, le=4.0)
     assistant_web_search_enabled: bool = True
     assistant_location: str = ""
 

@@ -312,6 +312,55 @@ class EzvizClient:
             raise EzvizError("萤石接口未返回图片地址")
         return str(url)
 
+    async def alarm_list(self, start_time_ms: int, end_time_ms: int) -> list[dict[str, Any]]:
+        """Return recent alarms for the configured camera.
+
+        The Open Platform has returned both a top-level list and an ``alarmList``
+        object across API generations, so the response is normalized here.
+        """
+
+        async def request(path: str, access_token: str) -> dict[str, Any]:
+            response = await self.client.post(
+                f"{self.settings.ezviz_api_base_url}{path}",
+                data={
+                    "accessToken": access_token,
+                    "deviceSerial": self.settings.ezviz_device_serial,
+                    "startTime": start_time_ms,
+                    "endTime": end_time_ms,
+                    "alarmType": -1,
+                    "status": 2,
+                    "pageStart": 0,
+                    "pageSize": 50,
+                },
+                timeout=self.settings.ezviz_alarm_timeout_seconds,
+            )
+            try:
+                return dict(response.json())
+            except ValueError as exc:
+                raise EzvizError("萤石告警接口返回了无效响应") from exc
+
+        payload: dict[str, Any] = {}
+        access_token = await self.token()
+        for path in ("/api/lapp/alarm/device/list", "/api/lapp/alarm/list"):
+            payload = await request(path, access_token)
+            code = str(payload.get("code") or "")
+            if code == "10002":
+                access_token = await self.token(force_refresh=True)
+                payload = await request(path, access_token)
+                code = str(payload.get("code") or "")
+            if code == "200":
+                break
+        else:
+            raise EzvizError(str(payload.get("msg") or "读取C6c移动告警失败"))
+
+        data = payload.get("data")
+        records: Any = data
+        if isinstance(data, dict):
+            records = data.get("alarmList") or data.get("data") or data.get("alarms") or []
+        if not isinstance(records, list):
+            raise EzvizError("萤石告警接口返回结构不完整")
+        return [dict(item) for item in records if isinstance(item, dict)]
+
     async def download_picture(self, picture_url: str) -> tuple[bytes, str]:
         response = await self.client.get(picture_url)
         response.raise_for_status()
