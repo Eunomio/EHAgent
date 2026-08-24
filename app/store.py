@@ -46,7 +46,21 @@ class ProductStore:
                     awake_minutes INTEGER, light_sleep_minutes INTEGER,
                     deep_sleep_minutes INTEGER, rem_sleep_minutes INTEGER,
                     sleep_score REAL, data_status TEXT NOT NULL DEFAULT 'final',
-                    stages_json TEXT NOT NULL DEFAULT '[]', received_at TEXT
+                    stages_json TEXT NOT NULL DEFAULT '[]', received_at TEXT,
+                    updated_at TEXT, demo_dataset_id TEXT, bed_exit_status TEXT
+                );
+                CREATE TABLE IF NOT EXISTS sleep_bed_event (
+                    id TEXT PRIMARY KEY, sleep_report_id TEXT, device_serial TEXT,
+                    event_type TEXT NOT NULL, device_time TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL, source TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    UNIQUE(device_serial, occurred_at, event_type)
+                );
+                CREATE TABLE IF NOT EXISTS sleep_sync_run (
+                    id TEXT PRIMARY KEY, target_date TEXT NOT NULL,
+                    source TEXT NOT NULL, status TEXT NOT NULL,
+                    started_at TEXT NOT NULL, finished_at TEXT,
+                    error_code TEXT, message TEXT
                 );
                 CREATE TABLE IF NOT EXISTS help_request (
                     id TEXT PRIMARY KEY, request_type TEXT NOT NULL, message TEXT NOT NULL,
@@ -126,6 +140,9 @@ class ProductStore:
             "data_status": "TEXT NOT NULL DEFAULT 'final'",
             "stages_json": "TEXT NOT NULL DEFAULT '[]'",
             "received_at": "TEXT",
+            "updated_at": "TEXT",
+            "demo_dataset_id": "TEXT",
+            "bed_exit_status": "TEXT",
         }
         for name, definition in columns.items():
             if name not in existing:
@@ -262,6 +279,7 @@ class ProductStore:
             record["samples_json"] = json.dumps(payload.get("samples", []), ensure_ascii=False)
             record["stages_json"] = json.dumps(payload.get("stages", []), ensure_ascii=False)
             record["received_at"] = now_iso()
+            record["updated_at"] = record["received_at"]
             keys = [
                 "id", "external_report_id", "device_serial", "report_date", "timezone",
                 "sleep_start", "sleep_end", "duration_minutes", "awake_minutes",
@@ -269,14 +287,23 @@ class ProductStore:
                 "sleep_score", "respiratory_rate", "heart_rate", "respiratory_min",
                 "respiratory_max", "heart_rate_min", "heart_rate_max", "bed_exit_count",
                 "quality", "data_status", "source", "measured_at", "samples_json",
-                "stages_json", "received_at",
+                "stages_json", "received_at", "updated_at", "demo_dataset_id",
+                "bed_exit_status",
             ]
             values = {key: record.get(key) for key in keys}
             db.execute(
                 f"INSERT INTO sleep_summary({','.join(keys)}) "
                 f"VALUES ({','.join(':'+key for key in keys)}) "
                 "ON CONFLICT(id) DO UPDATE SET "
-                + ",".join(f"{key}=excluded.{key}" for key in keys if key != "id"),
+                + ",".join(
+                    (
+                        "received_at=COALESCE(sleep_summary.received_at,excluded.received_at)"
+                        if key == "received_at"
+                        else f"{key}=excluded.{key}"
+                    )
+                    for key in keys
+                    if key != "id"
+                ),
                 values,
             )
             row = db.execute("SELECT * FROM sleep_summary WHERE id=?", (record["id"],)).fetchone()
@@ -286,12 +313,127 @@ class ProductStore:
         rows = self.sleep_history(1)
         return rows[0] if rows else None
 
-    def sleep_history(self, limit: int = 7) -> list[dict[str, Any]]:
+    def sleep_history(
+        self,
+        limit: int = 7,
+        *,
+        source: str | None = None,
+        demo_dataset_id: str | None = None,
+        exclude_demo: bool = False,
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        values: list[Any] = []
+        if source is not None:
+            conditions.append("source=?")
+            values.append(source)
+        if demo_dataset_id is not None:
+            conditions.append("demo_dataset_id=?")
+            values.append(demo_dataset_id)
+        if exclude_demo:
+            conditions.append("source!='demo_generated'")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        values.append(limit)
         with self._connect() as db:
             rows = [dict(r) for r in db.execute(
-                "SELECT * FROM sleep_summary ORDER BY sleep_end DESC LIMIT ?", (limit,)
+                f"SELECT * FROM sleep_summary{where} ORDER BY sleep_end DESC LIMIT ?",
+                values,
             )]
         return [self._decode_sleep(row) for row in rows]
+
+    def sleep_report_history(self, limit: int = 15) -> list[dict[str, Any]]:
+        """Return one coherent source cohort so demo and device data never mix."""
+
+        latest = self.latest_sleep()
+        if latest is None:
+            return []
+        if latest.get("source") == "demo_generated":
+            return self.sleep_history(
+                limit,
+                source="demo_generated",
+                demo_dataset_id=latest.get("demo_dataset_id"),
+            )
+        return self.sleep_history(limit, exclude_demo=True)
+
+    def delete_demo_sleep(self, dataset_id: str | None = None) -> int:
+        with self._connect() as db:
+            if dataset_id:
+                rows = db.execute(
+                    "SELECT id FROM sleep_summary WHERE source='demo_generated' "
+                    "AND demo_dataset_id=?",
+                    (dataset_id,),
+                ).fetchall()
+                result = db.execute(
+                    "DELETE FROM sleep_summary WHERE source='demo_generated' "
+                    "AND demo_dataset_id=?",
+                    (dataset_id,),
+                )
+            else:
+                rows = db.execute(
+                    "SELECT id FROM sleep_summary WHERE source='demo_generated'"
+                ).fetchall()
+                result = db.execute(
+                    "DELETE FROM sleep_summary WHERE source='demo_generated'"
+                )
+            ids = [row["id"] for row in rows]
+            if ids:
+                db.executemany(
+                    "DELETE FROM llm_output WHERE kind='sleep' AND entity_id=?",
+                    ((item,) for item in ids),
+                )
+        return int(result.rowcount)
+
+    def start_sleep_sync(self, target_date: str, source: str) -> str:
+        run_id = str(uuid4())
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO sleep_sync_run(id,target_date,source,status,started_at) "
+                "VALUES (?,?,?,'running',?)",
+                (run_id, target_date, source, now_iso()),
+            )
+        return run_id
+
+    def finish_sleep_sync(
+        self,
+        run_id: str,
+        status: str,
+        message: str,
+        error_code: str | None = None,
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE sleep_sync_run SET status=?,finished_at=?,error_code=?,message=? "
+                "WHERE id=?",
+                (status, now_iso(), error_code, message[:300], run_id),
+            )
+
+    def latest_sleep_sync(self) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM sleep_sync_run ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def replace_sleep_bed_events(
+        self,
+        report_id: str,
+        device_serial: str,
+        events: list[dict[str, str]],
+    ) -> None:
+        with self._connect() as db:
+            db.execute("DELETE FROM sleep_bed_event WHERE sleep_report_id=?", (report_id,))
+            db.executemany(
+                "INSERT OR IGNORE INTO sleep_bed_event("
+                "id,sleep_report_id,device_serial,event_type,device_time,occurred_at,source,received_at"
+                ") VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    (
+                        str(uuid4()), report_id, device_serial, item["event_type"],
+                        item["device_time"], item["occurred_at"],
+                        "ezviz_sleep_assistant", now_iso(),
+                    )
+                    for item in events
+                ),
+            )
 
     @staticmethod
     def _decode_sleep(record: dict[str, Any]) -> dict[str, Any]:

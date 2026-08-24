@@ -1,11 +1,20 @@
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.dependencies import EzvizDep, LlmDep, SettingsDep, StoreDep, VisionSafetyDep
+from app.dependencies import (
+    EzvizDep,
+    LlmDep,
+    SettingsDep,
+    SleepSyncDep,
+    StoreDep,
+    VisionSafetyDep,
+)
 from app.devices.ezviz import EzvizError
+from app.sleep.demo import DEMO_DATASET_ID, import_demo_dataset
 from app.vision.service import BaselineMissingError, UnsafeBaselineError, VisionSafetyError
 from app.vision.workflow import record_safety_result
 
@@ -14,7 +23,7 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 @router.get("")
 async def device_status(
-    ezviz: EzvizDep, settings: SettingsDep
+    ezviz: EzvizDep, settings: SettingsDep, store: StoreDep
 ) -> dict[str, Any]:
     c6c: dict[str, Any] = {
         "name": "萤石C6c", "configured": ezviz.configured, "online": None
@@ -25,13 +34,50 @@ async def device_status(
             c6c.update({"online": str(info.get("status")) == "1", "model": info.get("model")})
         except EzvizError as exc:
             c6c["error"] = str(exc)
+    latest_sleep = store.latest_sleep()
     return {
         "c6c": c6c,
         "sleep_assistant": {
             "name": settings.sleep_device_name,
             "configured": ezviz.sleep_configured,
             "connection": settings.sleep_provider,
+            "last_report_at": latest_sleep.get("measured_at") if latest_sleep else None,
+            "demo_active": bool(
+                latest_sleep and latest_sleep.get("source") == "demo_generated"
+            ),
+            "sync": store.latest_sleep_sync(),
         },
+    }
+
+
+@router.post("/sleep/demo")
+async def load_sleep_demo(
+    store: StoreDep, settings: SettingsDep, llm: LlmDep
+) -> dict[str, Any]:
+    if settings.app_env == "production":
+        raise HTTPException(403, "生产环境不能导入演示睡眠数据")
+    records = import_demo_dataset(store, Path(settings.database_path).resolve().parent)
+    latest = records[-1]
+    copy, source = await llm.analyze_sleep(latest, records[-2::-1][:7])
+    store.add_llm_output(
+        "sleep", latest["id"], copy.model_dump(), source, llm.model_name
+    )
+    return {
+        "success": True,
+        "dataset_id": DEMO_DATASET_ID,
+        "imported": len(records),
+        "latest": latest,
+    }
+
+
+@router.delete("/sleep/demo")
+def clear_sleep_demo(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
+    if settings.app_env == "production":
+        raise HTTPException(403, "生产环境不能清除演示睡眠数据")
+    return {
+        "success": True,
+        "dataset_id": DEMO_DATASET_ID,
+        "deleted": store.delete_demo_sleep(DEMO_DATASET_ID),
     }
 
 
@@ -46,25 +92,15 @@ async def test_sleep_assistant(ezviz: EzvizDep) -> dict[str, Any]:
 
 @router.post("/sleep/sync")
 async def sync_sleep_assistant(
-    ezviz: EzvizDep,
-    store: StoreDep,
-    llm: LlmDep,
+    sleep_sync: SleepSyncDep,
     target_date: date | None = None,
 ) -> dict[str, Any]:
     """Fetch one EZVIZ sleep day and persist it through the product contract."""
 
     try:
-        summary = await ezviz.sleep_summary_for_date(
-            target_date or date.today() - timedelta(days=1)
-        )
+        return await sleep_sync.sync_date(target_date or date.today() - timedelta(days=1))
     except EzvizError as exc:
         raise HTTPException(422, str(exc)) from exc
-    record = store.add_sleep(summary)
-    copy, source = await llm.analyze_sleep(record, store.sleep_history(7))
-    analysis = store.add_llm_output(
-        "sleep", record["id"], copy.model_dump(), source, llm.model_name
-    )
-    return {"success": True, "sleep": record, "analysis": analysis}
 
 
 @router.post("/c6c/test")

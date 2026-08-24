@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     sleep_device_serial: str = ""
     sleep_device_id: str = ""
     sleep_timestamp_utc_offset_hours: int = Field(default=0, ge=-12, le=14)
+    sleep_auto_sync_enabled: bool = True
+    sleep_sync_hour: int = Field(default=10, ge=0, le=23)
+    sleep_sync_minute: int = Field(default=0, ge=0, le=59)
+    sleep_sync_lookback_days: int = Field(default=3, ge=1, le=14)
+    sleep_sync_utc_offset_hours: int = Field(default=8, ge=-12, le=14)
     safety_area_name: str = "卧室外走道"
     llm_enabled: bool = False
     llm_provider: str = "openai"

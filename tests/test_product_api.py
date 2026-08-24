@@ -58,6 +58,45 @@ def test_sleep_sync_persists_the_ezviz_contract(client: TestClient) -> None:
     assert latest["respiratory_rate"] == 15.0
 
 
+def test_demo_sleep_is_idempotent_isolated_and_clearable(client: TestClient) -> None:
+    real = {
+        "external_report_id": "real-20260819",
+        "device_serial": "SLEEP001",
+        "sleep_start": "2026-08-18T22:41:00+08:00",
+        "sleep_end": "2026-08-19T06:32:00+08:00",
+        "duration_minutes": 471,
+        "respiratory_rate": 16.2,
+        "heart_rate": 62,
+        "quality": "good",
+        "source": "ezviz_sleep_assistant",
+        "measured_at": "2026-08-19T06:35:00+08:00",
+    }
+    assert client.post("/api/v1/ingest/sleep-reports", json=real).status_code == 200
+
+    first = client.post("/api/v1/devices/sleep/demo")
+    second = client.post("/api/v1/devices/sleep/demo")
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["imported"] == 8
+
+    report = client.get("/api/v1/resident/sleep").json()
+    assert report["data_source"] == "demo_generated"
+    assert len(report["history"]) == 8
+    assert report["baseline"]["state"] == "changed"
+    assert set(report["baseline"]["changed_metrics"]) == {
+        "duration_minutes", "heart_rate", "respiratory_rate",
+    }
+    assert report["latest"]["bed_exit_count"] == 2
+    assert report["sync"]["message"] == "演示数据已就绪"
+
+    cleared = client.delete("/api/v1/devices/sleep/demo")
+    assert cleared.status_code == 200
+    assert cleared.json()["deleted"] == 8
+    restored = client.get("/api/v1/resident/sleep").json()
+    assert restored["data_source"] == "ezviz_sleep_assistant"
+    assert len(restored["history"]) == 1
+
+
 def test_safety_task_and_action(client: TestClient) -> None:
     result = client.post("/api/v1/ingest/safety-results", json={
         "result": "obstacle", "source": "model", "object_name": "纸箱",

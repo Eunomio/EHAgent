@@ -16,6 +16,7 @@ from app.core.logging import configure_logging
 from app.devices.ezviz import EzvizClient
 from app.llm.service import LlmService
 from app.sleep.service import SleepService
+from app.sleep.sync import SleepSyncService
 from app.store import ProductStore
 from app.vision.monitor import VisionChangeMonitor
 from app.vision.service import VisionSafetyService
@@ -23,6 +24,7 @@ from app.vision.service import VisionSafetyService
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or get_settings()
+    auto_sync_allowed = settings is None
     configure_logging(resolved.log_level)
     database_path = Path(resolved.database_path).resolve()
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,16 +35,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     llm = LlmService(resolved)
     assistant = AssistantService(store, llm, resolved)
     sleep = SleepService(store, llm, resolved)
+    sleep_sync = SleepSyncService(resolved, ezviz, store, llm)
     vision_safety = VisionSafetyService(resolved)
     vision_monitor = VisionChangeMonitor(resolved, ezviz, vision_safety, store)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         monitor_task = asyncio.create_task(vision_monitor.run())
+        sleep_sync_task = (
+            asyncio.create_task(sleep_sync.run()) if auto_sync_allowed else None
+        )
         yield
         monitor_task.cancel()
+        if sleep_sync_task is not None:
+            sleep_sync_task.cancel()
         with suppress(asyncio.CancelledError):
             await monitor_task
+        if sleep_sync_task is not None:
+            with suppress(asyncio.CancelledError):
+                await sleep_sync_task
         await ezviz.close()
         await llm.close()
         await vision_safety.close()
@@ -59,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.llm = llm
     app.state.assistant = assistant
     app.state.sleep = sleep
+    app.state.sleep_sync = sleep_sync
     app.state.vision_safety = vision_safety
     app.state.vision_monitor = vision_monitor
     app.add_middleware(

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.dependencies import LlmDep, SettingsDep, StoreDep
+from app.sleep.baseline import compare_to_personal_baseline
 
 router = APIRouter(prefix="/resident", tags=["resident"])
 
@@ -62,10 +63,25 @@ def sleep_alert(history: list[dict[str, Any]]) -> dict[str, str] | None:
     return None
 
 
+def sleep_sync_payload(
+    store: StoreDep, latest: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if latest and latest.get("source") == "demo_generated":
+        return {
+            "status": "success",
+            "target_date": latest.get("report_date"),
+            "last_success_at": latest.get("received_at"),
+            "last_attempt_at": latest.get("received_at"),
+            "message": "演示数据已就绪",
+        }
+    return store.latest_sleep_sync()
+
+
 @router.get("/dashboard")
 def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
     preferences = settings_payload(store)
-    sleep = store.latest_sleep()
+    sleep_history = store.sleep_report_history(15)
+    sleep = sleep_history[0] if sleep_history else None
     sleep_analysis = store.latest_llm_output("sleep", sleep["id"]) if sleep else None
     task = store.latest_task()
     hour = datetime.now().hour
@@ -83,6 +99,13 @@ def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
             "status": "ready" if sleep else "empty",
             "summary": resident_sleep(sleep),
             "analysis": sleep_analysis,
+            "baseline": compare_to_personal_baseline(sleep_history),
+            "data_source": sleep.get("source") if sleep else None,
+            "bed_exit": {
+                "count": sleep.get("bed_exit_count") if sleep else None,
+                "status": sleep.get("bed_exit_status") if sleep else "unavailable",
+            },
+            "sync": sleep_sync_payload(store, sleep),
             "headline": (
                 f"睡了{sleep['duration_minutes'] // 60}小时{sleep['duration_minutes'] % 60}分钟"
                 if sleep
@@ -117,16 +140,23 @@ def act_on_task(task_id: str, payload: TaskAction, store: StoreDep) -> dict[str,
 
 @router.get("/sleep")
 def sleep(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
-    history = store.sleep_history(14)
+    history = store.sleep_report_history(15)
     latest = history[0] if history else None
     return {
         "device_name": settings.sleep_device_name,
         "latest": resident_sleep(latest),
         "history": [resident_sleep(item) for item in history],
         "analysis": store.latest_llm_output("sleep", latest["id"]) if latest else None,
-        "baseline_ready": len(history) >= 7,
+        "baseline": compare_to_personal_baseline(history),
+        "baseline_ready": len(history) >= 8,
         "alert": sleep_alert(history),
         "alerts_paused": settings_payload(store)["sleep_alerts_paused"],
+        "data_source": latest.get("source") if latest else None,
+        "bed_exit": {
+            "count": latest.get("bed_exit_count") if latest else None,
+            "status": latest.get("bed_exit_status") if latest else "unavailable",
+        },
+        "sync": sleep_sync_payload(store, latest),
     }
 
 

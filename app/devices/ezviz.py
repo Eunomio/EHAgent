@@ -202,6 +202,14 @@ class EzvizClient:
         record_key = sha256(
             f"ezviz-sleep:{device_id}:{target_date.isoformat()}".encode()
         ).hexdigest()[:24]
+        bed_events: list[dict[str, str]] = []
+        bed_exit_status = "unavailable"
+        if self.settings.sleep_device_serial:
+            bed_events = await self.sleep_bed_events(sleep_start, sleep_end)
+            bed_exit_status = "available"
+        bed_exit_count = sum(
+            event["event_type"] == "out_of_bed" for event in bed_events
+        ) if bed_exit_status == "available" else None
         return {
             "id": f"ezviz-sleep-{record_key}",
             "external_report_id": f"ezviz-daily-{target_date.isoformat()}",
@@ -224,7 +232,9 @@ class EzvizClient:
             "respiratory_max": self._number_in_range(breath_data.get("max"), 1, 80),
             "heart_rate_min": self._number_in_range(heart_data.get("min"), 20, 240),
             "heart_rate_max": self._number_in_range(heart_data.get("max"), 20, 240),
-            "bed_exit_count": None,
+            "bed_exit_count": bed_exit_count,
+            "bed_exit_status": bed_exit_status,
+            "bed_events": bed_events,
             "quality": "usable" if heart_rate is not None or respiratory_rate is not None else "insufficient",
             "data_status": "final",
             "source": "ezviz_sleep_assistant",
@@ -232,6 +242,46 @@ class EzvizClient:
             "samples": [samples[key] for key in sorted(samples)],
             "stages": [],
         }
+
+    async def sleep_bed_events(
+        self, sleep_start: datetime, sleep_end: datetime
+    ) -> list[dict[str, str]]:
+        """Fetch and normalize event-level in-bed/out-of-bed messages."""
+
+        serial = self.settings.sleep_device_serial.strip()
+        if not serial:
+            raise EzvizError("离床消息接口需要配置睡眠伴侣设备序列号")
+        path = "/api/service/sleepDetector/v3/third/whst/statistics/data/bodyDetect"
+        result: dict[tuple[str, str], dict[str, str]] = {}
+        limit = 50
+        for offset in range(0, 1000, limit):
+            data = await self._sleep_get(
+                path,
+                {"deviceSerial": serial, "offset": str(offset), "limit": str(limit)},
+            )
+            if data is None:
+                break
+            if not isinstance(data, list):
+                raise EzvizError("萤石离床消息返回结构不完整")
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                occurred = self._sleep_timestamp(item.get("messageTime"))
+                message_type = str(item.get("messageType") or "")
+                if occurred is None or not sleep_start <= occurred <= sleep_end:
+                    continue
+                event_type = {"1": "in_bed", "2": "out_of_bed"}.get(message_type)
+                if event_type is None:
+                    continue
+                normalized = {
+                    "event_type": event_type,
+                    "device_time": str(item.get("messageTime")),
+                    "occurred_at": occurred.isoformat(),
+                }
+                result[(normalized["occurred_at"], event_type)] = normalized
+            if len(data) < limit:
+                break
+        return [result[key] for key in sorted(result)]
 
     async def device_info(self) -> dict[str, Any]:
         if not self.settings.ezviz_device_serial:

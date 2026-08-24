@@ -8,6 +8,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 data class SafetyCard(val status: String = "ready", val headline: String = "等待下一次检查", val detail: String = "", val taskId: String? = null)
+data class BaselineMetric(
+    val label: String,
+    val current: Double?,
+    val baselineMedian: Double?,
+    val difference: Double?,
+    val status: String,
+)
 data class SleepCard(
     val headline: String = "睡眠数据暂未同步",
     val duration: Int? = null,
@@ -22,6 +29,13 @@ data class SleepCard(
     val lightSleepMinutes: Int? = null,
     val deepSleepMinutes: Int? = null,
     val remSleepMinutes: Int? = null,
+    val baselineState: String = "no_data",
+    val baselineMessage: String? = null,
+    val baselineNights: Int = 0,
+    val baselineMetrics: List<BaselineMetric> = emptyList(),
+    val dataSource: String? = null,
+    val syncStatus: String? = null,
+    val syncMessage: String? = null,
 )
 data class Dashboard(val greeting: String = "您好", val subtitle: String = "今天也安心生活", val safety: SafetyCard = SafetyCard(), val sleep: SleepCard = SleepCard(), val contactName: String = "家人", val contactPhone: String = "")
 data class DeviceState(
@@ -29,6 +43,7 @@ data class DeviceState(
     val cameraOnline: Boolean? = null,
     val sleepConfigured: Boolean = false,
     val sleepLastReportAt: String? = null,
+    val sleepDemoActive: Boolean = false,
 )
 data class CameraSdkSession(
     val appKey: String,
@@ -97,6 +112,9 @@ class ProductApi(private val baseUrl: String) {
         val sleep = root.getJSONObject("sleep")
         val summary = sleep.optJSONObject("summary")
         val analysis = sleep.optJSONObject("analysis")?.optJSONObject("content")
+        val baseline = sleep.optJSONObject("baseline")
+        val metrics = baseline?.optJSONObject("metrics")
+        val sync = sleep.optJSONObject("sync")
         return Dashboard(
             greeting = root.optString("greeting", "您好"), subtitle = root.optString("subtitle", "今天也安心生活"),
             safety = SafetyCard(safety.optString("status"), safety.optString("headline"), safety.optString("detail"), safety.optJSONObject("task")?.optString("id")),
@@ -114,6 +132,14 @@ class ProductApi(private val baseUrl: String) {
                 lightSleepMinutes = summary?.optionalInt("light_sleep_minutes"),
                 deepSleepMinutes = summary?.optionalInt("deep_sleep_minutes"),
                 remSleepMinutes = summary?.optionalInt("rem_sleep_minutes"),
+                baselineState = baseline?.optString("state", "no_data") ?: "no_data",
+                baselineMessage = baseline?.optionalString("message"),
+                baselineNights = baseline?.optInt("baseline_nights", 0) ?: 0,
+                baselineMetrics = listOf("duration_minutes", "heart_rate", "respiratory_rate")
+                    .mapNotNull { metrics?.optJSONObject(it)?.toBaselineMetric() },
+                dataSource = sleep.optionalString("data_source"),
+                syncStatus = sync?.optionalString("status"),
+                syncMessage = sync?.optionalString("message"),
             ),
             contactName = root.getJSONObject("help").optString("contact_name", "家人"),
             contactPhone = root.getJSONObject("help").optString("contact_phone", "")
@@ -130,6 +156,7 @@ class ProductApi(private val baseUrl: String) {
                 ?.optBoolean("online"),
             sleepConfigured = sleep.optBoolean("configured"),
             sleepLastReportAt = sleep.optionalString("last_report_at"),
+            sleepDemoActive = sleep.optBoolean("demo_active"),
         )
     }
 
@@ -200,6 +227,13 @@ class ProductApi(private val baseUrl: String) {
     suspend fun updateContact(name: String, phone: String) = request("/api/v1/resident/settings", "PUT", JSONObject().put("contact_name", name).put("contact_phone", phone))
     suspend fun sendFeedback(topic: String, message: String) = request("/api/v1/resident/feedback", "POST", JSONObject().put("topic", topic).put("message", message))
     suspend fun settings(): JSONObject = request("/api/v1/resident/settings")
+    suspend fun syncSleep() = request(
+        "/api/v1/devices/sleep/sync",
+        method = "POST",
+        readTimeoutMillis = 60_000,
+    )
+    suspend fun loadSleepDemo() = request("/api/v1/devices/sleep/demo", method = "POST")
+    suspend fun clearSleepDemo() = request("/api/v1/devices/sleep/demo", method = "DELETE")
 
     suspend fun sendAssistantMessage(
         conversationId: String?,
@@ -240,6 +274,14 @@ private fun JSONObject.toAssistantMessage() = AssistantMessage(
     }.orEmpty(),
     contextUsed = optJSONArray("context_used")?.mapStrings().orEmpty(),
     actions = optJSONArray("actions")?.mapObjects { it.toAssistantAction() }.orEmpty(),
+)
+
+private fun JSONObject.toBaselineMetric() = BaselineMetric(
+    label = optString("label"),
+    current = optionalDouble("current"),
+    baselineMedian = optionalDouble("baseline_median"),
+    difference = optionalDouble("difference"),
+    status = optString("status", "insufficient"),
 )
 
 private fun JSONObject.toAssistantAction() = AssistantAction(

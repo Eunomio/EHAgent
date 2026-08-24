@@ -663,7 +663,7 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                         )
                     }
                     sleep.sleepScore?.let {
-                        Text("睡眠得分 ${formatOne(it)}", color = Color.White, fontSize = 18.sp)
+                        Text("萤石参考分 ${formatOne(it)}", color = Color.White, fontSize = 18.sp)
                     }
                 }
             }
@@ -672,6 +672,29 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                 VitalCard(Modifier.weight(1f), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
             }
             VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.DirectionsWalk, "夜间离床", sleep.bedExitCount?.toString() ?: "—", "次")
+            sleep.baselineMessage?.let { message ->
+                Card(
+                    shape = RoundedCornerShape(22.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (sleep.baselineState == "changed") Color(0xFFFFF1E5) else BrandSoft,
+                    ),
+                ) {
+                    Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Timeline, null, tint = Brand)
+                            Spacer(Modifier.width(8.dp))
+                            Text("与个人平时相比", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Text(message, fontSize = 17.sp, lineHeight = 26.sp)
+                        sleep.baselineMetrics.forEach { metric ->
+                            BaselineMetricRow(metric)
+                        }
+                        if (sleep.baselineState == "baseline_building") {
+                            Text("已积累 ${sleep.baselineNights} 晚有效基线记录", color = Muted, fontSize = 15.sp)
+                        }
+                    }
+                }
+            }
             SleepStagesCard(sleep)
             sleep.analysis?.let {
                 Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = BrandSoft)) {
@@ -681,9 +704,44 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                     }
                 }
             }
-            Text("数据来自床边设备的无感测量。身体不舒服时，请及时联系家人或医生。", color = Muted, lineHeight = 24.sp)
+            OutlinedButton(
+                onClick = vm::syncSleep,
+                enabled = !state.sleepActionLoading,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(15.dp),
+            ) {
+                if (state.sleepActionLoading) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text("重新同步昨晚数据", fontSize = 17.sp)
+            }
+            sleep.syncMessage?.let { Text("同步状态：$it", color = Muted, fontSize = 14.sp) }
+            Text("报告用于了解近期睡眠变化，不代替医疗判断。身体不舒服时，请及时联系家人或医生。", color = Muted, lineHeight = 24.sp)
         }
         SettingsSwitch("暂停睡眠提醒", "睡眠数据仍会保留", state.sleepPaused, vm::setSleepPaused)
+    }
+}
+
+@Composable
+private fun BaselineMetricRow(metric: BaselineMetric) {
+    val unit = if (metric.label == "睡眠时长") "分钟" else "次/分"
+    val current = metric.current?.let(::formatOne) ?: "—"
+    val baseline = metric.baselineMedian?.let(::formatOne) ?: "—"
+    val difference = metric.difference?.let {
+        val prefix = if (it > 0) "+" else ""
+        "$prefix${formatOne(it)} $unit"
+    } ?: "数据不足"
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(metric.label, fontWeight = FontWeight.SemiBold)
+            Text("昨晚 $current · 平时 $baseline $unit", color = Muted, fontSize = 14.sp)
+        }
+        Text(
+            difference,
+            color = if (metric.status == "changed") Color(0xFFB45309) else Brand,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
@@ -746,6 +804,27 @@ private fun MePage(state: UiState, vm: MainViewModel) {
         Text("我的设备", fontSize = 21.sp, fontWeight = FontWeight.Bold)
         DeviceRow(Icons.Rounded.Videocam, "萤石 C6c", deviceText(state.devices.cameraConfigured, state.devices.cameraOnline))
         DeviceRow(Icons.Rounded.Bed, "无感睡眠助手", if (state.devices.sleepConfigured) "已连接" else "等待连接")
+        Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("睡眠演示数据", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (state.devices.sleepDemoActive) "当前睡眠报告使用本地演示数据"
+                    else "当前未使用演示睡眠数据",
+                    color = Muted,
+                )
+                OutlinedButton(
+                    onClick = {
+                        if (state.devices.sleepDemoActive) vm.clearSleepDemo()
+                        else vm.loadSleepDemo()
+                    },
+                    enabled = !state.sleepActionLoading,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text(if (state.devices.sleepDemoActive) "一键清除演示数据" else "导入8晚演示数据")
+                }
+            }
+        }
         Text("隐私开关", fontSize = 21.sp, fontWeight = FontWeight.Bold)
         SettingsSwitch("通道检查", if (state.cameraPaused) "当前已暂停" else "当前已开启", !state.cameraPaused) { vm.setCameraPaused(!it) }
         SettingsSwitch("睡眠提醒", if (state.sleepPaused) "当前已暂停" else "当前已开启", !state.sleepPaused) { vm.setSleepPaused(!it) }

@@ -77,8 +77,15 @@ POST /api/v1/devices/sleep/sync?target_date=YYYY-MM-DD
 | `respiratory_rate`、`respiratory_min`、`respiratory_max` | 呼吸统计的十分钟均值、最小值、最大值 | 日均值由有效十分钟均值计算；只接受 1–80 次/分。 |
 | `samples[].at`、`samples[].heart_rate`、`samples[].respiratory_rate` | 心率分钟曲线、呼吸十分钟曲线 | 以时间戳合并，保留可用的单项或双项采样点。 |
 | `measured_at`、`source`、`quality` | 睡眠结束时间、固定来源、有效字段情况 | 结束时间为测量时间；来源为 `ezviz_sleep_assistant`；无有效心率和呼吸率时标记 `insufficient`。 |
+| `bed_exit_count`、`bed_exit_status` | 睡眠伴侣 EP 的事件级入床/离床消息 | 只统计睡眠时间窗内的离床事件并去重；完整查询成功才允许写入 0，否则保持为空并标记 `unavailable`。 |
 
-每日睡眠接口返回的睡眠评分和分期尚无当前产品契约字段，暂不入库或展示；统计组件也不提供可确认的离床次数，因此同步时 `bed_exit_count` 保持为空。萤石返回的统计时间字符串不带时区；当前设备返回的昼夜模式暂按 UTC 使用默认偏移 `0`，该项必须在厂商确认或与设备端记录核对后才能改为其他偏移。不得用清醒分期或其他字段推导离床次数、HRV 或医疗结论。
+每日睡眠评分可入库，并在 Android 端明确显示为“萤石参考分”；不将它与个人基线合成新的健康分数。分期字段只在接口返回且口径确认后展示。萤石统计时间字符串可能不带时区，继续使用 `EH_SLEEP_TIMESTAMP_UTC_OFFSET_HOURS` 显式解析，实际偏移仍须和设备端记录核对。不得用清醒分期推导离床次数、HRV 或医疗结论。
+
+后端默认在北京时间 10:00 同步前一晚，并在启动时补拉最近三天。可用 `EH_SLEEP_AUTO_SYNC_ENABLED`、`EH_SLEEP_SYNC_HOUR`、`EH_SLEEP_SYNC_MINUTE`、`EH_SLEEP_SYNC_LOOKBACK_DAYS` 和 `EH_SLEEP_SYNC_UTC_OFFSET_HOURS` 调整。页面读取本地数据库；外部接口失败不会阻塞既有报告。
+
+本地开发环境提供 `POST /api/v1/devices/sleep/demo` 和 `DELETE /api/v1/devices/sleep/demo`。前者生成 8 晚固定演示记录，后者只删除对应 `demo_dataset_id`。演示数据来源为 `demo_generated`，基线只在同一数据集内计算；生产环境拒绝这两个操作。
+
+个人基线使用当前夜之前最多 14 晚有效记录，至少 7 晚后启用。睡眠时长、平均心率和平均呼吸率分别计算中位数与 MAD，仅描述是否与近期个人水平有变化。当前产品不输出跌倒风险、行动能力、认知状态或心理健康预测。
 
 后续数据接入顺序：
 

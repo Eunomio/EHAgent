@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date
+from datetime import date, datetime
 from urllib.parse import parse_qs
 
 import httpx
@@ -167,6 +167,49 @@ def test_sleep_summary_maps_daily_statistics_to_product_contract() -> None:
             {"at": "2026-08-12T22:30:00+08:00", "heart_rate": 60.0, "respiratory_rate": 16.0},
             {"at": "2026-08-12T22:31:00+08:00", "heart_rate": 64.0},
             {"at": "2026-08-12T22:40:00+08:00", "respiratory_rate": 14.0},
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_sleep_bed_events_are_filtered_deduplicated_and_normalized() -> None:
+    async def scenario() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith("/statistics/data/bodyDetect")
+            assert request.url.params["deviceSerial"] == "SLEEP123"
+            return httpx.Response(200, json={
+                "code": 200,
+                "data": [
+                    {"messageTime": "2026-08-13 00:30:00", "messageType": 2},
+                    {"messageTime": "2026-08-13 00:30:00", "messageType": 2},
+                    {"messageTime": "2026-08-13 00:45:00", "messageType": 1},
+                    {"messageTime": "2026-08-13 09:00:00", "messageType": 2},
+                ],
+            })
+
+        settings = Settings(
+            sleep_provider="ezviz",
+            sleep_device_serial="SLEEP123",
+            ezviz_access_token="test-token",
+            ezviz_auto_token=False,
+            sleep_timestamp_utc_offset_hours=8,
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            events = await EzvizClient(settings, client).sleep_bed_events(
+                datetime.fromisoformat("2026-08-12T22:30:00+08:00"),
+                datetime.fromisoformat("2026-08-13T06:21:00+08:00"),
+            )
+        assert events == [
+            {
+                "event_type": "out_of_bed",
+                "device_time": "2026-08-13 00:30:00",
+                "occurred_at": "2026-08-13T00:30:00+08:00",
+            },
+            {
+                "event_type": "in_bed",
+                "device_time": "2026-08-13 00:45:00",
+                "occurred_at": "2026-08-13T00:45:00+08:00",
+            },
         ]
 
     asyncio.run(scenario())

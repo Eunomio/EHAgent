@@ -47,7 +47,9 @@ class SleepReportIn(BaseModel):
     bed_exit_count: int | None = Field(default=None, ge=0, le=100)
     quality: Literal["good", "usable", "insufficient"] = "usable"
     data_status: Literal["preliminary", "final", "corrected"] = "final"
-    source: Literal["ezviz_sleep_assistant", "authorized_export", "research_import"]
+    source: Literal[
+        "ezviz_sleep_assistant", "authorized_export", "research_import", "demo_generated"
+    ]
     measured_at: datetime
     samples: list[VitalSample] = Field(default_factory=list)
     stages: list[SleepStage] = Field(default_factory=list)

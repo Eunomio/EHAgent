@@ -18,6 +18,8 @@
 | 获取C6c安卓SDK播放会话 | `POST /api/v1/devices/c6c/sdk-session` |
 | 睡眠伴侣连通测试 | `POST /api/v1/devices/sleep/test` |
 | 同步萤石单日睡眠摘要 | `POST /api/v1/devices/sleep/sync?target_date=YYYY-MM-DD` |
+| 导入本地睡眠演示数据（仅开发环境） | `POST /api/v1/devices/sleep/demo` |
+| 清除本地睡眠演示数据（仅开发环境） | `DELETE /api/v1/devices/sleep/demo` |
 | 接收睡眠摘要 | `POST /api/v1/ingest/sleep-summaries` |
 | 接收模型判断 | `POST /api/v1/ingest/safety-results` |
 | 上传训练图片 | `POST /api/v1/ingest/vision-samples` |
@@ -50,6 +52,10 @@
 睡眠数据写入后会生成`analysis.content.summary`；老人反馈同时保留`message`原文和`summary`摘要。
 
 正式睡眠报告使用`device_serial + external_report_id`识别平台中的唯一报告。重复推送会更新原记录。配置`EH_SLEEP_WEBHOOK_TOKEN`后，请求必须携带`X-EH-Sleep-Token`。萤石设备报告缺少`device_serial`返回422，与后端绑定的设备序列号不一致返回409。住户接口不会返回设备序列号和平台报告编号。
+
+`GET /api/v1/resident/sleep` 返回最新睡眠、同来源历史、个人基线、离床数据状态和最近同步状态。个人基线状态为 `no_data`、`baseline_building`、`close_to_baseline`、`changed` 或 `insufficient`；指标包含当前值、个人中位数、差值和有效晚数。演示数据与真实设备数据不会混合计算。
+
+离床次数只有在事件接口完整查询成功时才可能返回 `0`；无法查询时 `bed_exit.count` 为 `null`，`bed_exit.status` 为 `unavailable`。客户端不得把空值显示成 0。
 
 安卓端只在老人主动查看时调用`POST /api/v1/devices/c6c/sdk-session`。接口返回EZPlayer初始化所需的AppKey、AccessToken、设备序列号、通道号和播放验证码，AppSecret始终留在后端；暂停通道检查后接口返回409。当前项目用于同一家庭可信局域网联调，正式外网部署时需要在该接口前增加用户登录、HTTPS和设备级授权。
 

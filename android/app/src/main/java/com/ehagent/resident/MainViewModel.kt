@@ -34,6 +34,7 @@ data class UiState(
     val assistantMessages: List<AssistantMessage> = emptyList(),
     val assistantLoading: Boolean = false,
     val assistantError: String? = null,
+    val sleepActionLoading: Boolean = false,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -332,6 +333,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSleepPaused(paused: Boolean) = viewModelScope.launch {
         runCatching { ProductApi(backendUrl).updatePause(sleep = paused) }.onSuccess { _state.value = _state.value.copy(sleepPaused = paused) }
+    }
+
+    fun syncSleep() = viewModelScope.launch {
+        if (_state.value.sleepActionLoading) return@launch
+        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
+        runCatching { ProductApi(backendUrl).syncSleep() }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    sleepActionLoading = false,
+                    notice = "昨晚睡眠数据已同步",
+                )
+                refresh()
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    sleepActionLoading = false,
+                    error = it.message ?: "睡眠同步失败",
+                )
+            }
+    }
+
+    fun loadSleepDemo() = viewModelScope.launch {
+        if (_state.value.sleepActionLoading) return@launch
+        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
+        runCatching { ProductApi(backendUrl).loadSleepDemo() }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    sleepActionLoading = false,
+                    notice = "8晚演示睡眠数据已导入",
+                )
+                refresh()
+            }
+            .onFailure {
+                _state.value = _state.value.copy(sleepActionLoading = false, error = it.message)
+            }
+    }
+
+    fun clearSleepDemo() = viewModelScope.launch {
+        if (_state.value.sleepActionLoading) return@launch
+        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
+        runCatching { ProductApi(backendUrl).clearSleepDemo() }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    sleepActionLoading = false,
+                    notice = "演示睡眠数据已清除",
+                )
+                refresh()
+            }
+            .onFailure {
+                _state.value = _state.value.copy(sleepActionLoading = false, error = it.message)
+            }
     }
 
     fun saveContact(name: String, phone: String) = viewModelScope.launch {
