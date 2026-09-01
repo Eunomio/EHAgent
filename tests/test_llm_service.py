@@ -91,3 +91,40 @@ def test_assistant_enables_web_search_and_returns_sources() -> None:
         }]
 
     asyncio.run(scenario())
+
+
+def test_llm_semantically_selects_camera_tool_without_device_keyword() -> None:
+    async def scenario() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = request.read().decode("utf-8")
+            assert "inspect_home_safety" in body
+            assert "帮我确认一下家里现在是否安全" in body
+            return httpx.Response(200, json={
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": (
+                            '{"tool_name":"inspect_home_safety",'
+                            '"reason":"用户希望查看当前居家环境",'
+                            '"confidence":0.96}'
+                        ),
+                    }],
+                }]
+            })
+
+        settings = Settings(
+            llm_enabled=True, llm_api_key="test-key", llm_model="test-model",
+            llm_api_base="https://example.test/v1",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            service = LlmService(settings, client)
+            decision, source = await service.plan_device_tool(
+                "帮我确认一下家里现在是否安全",
+                {"camera_configured": True},
+            )
+        assert source == "llm"
+        assert decision.tool_name == "inspect_home_safety"
+        assert decision.confidence == 0.96
+
+    asyncio.run(scenario())

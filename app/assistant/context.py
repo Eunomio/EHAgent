@@ -43,10 +43,45 @@ class ResidentContextBuilder:
             }
             used.append("待处理的居家安全提醒")
 
+        profile = self.store.profile_facts(("confirmed",), limit=8)
+        if profile:
+            context["confirmed_profile_facts"] = [
+                {
+                    "fact_type": item["fact_type"],
+                    "display_text": item["display_text"],
+                    "confirmed_at": item["consented_at"],
+                }
+                for item in profile
+            ]
+            used.append("本人确认的近期情况")
+
+        inferred_profile = self.store.profile_facts(("inferred",), limit=5)
+        if inferred_profile:
+            context["inferred_low_sensitivity_preferences"] = [
+                {
+                    "fact_type": item["fact_type"],
+                    "display_text": item["display_text"],
+                    "confidence": item["confidence"],
+                }
+                for item in inferred_profile
+            ]
+            used.append("日常对话中推测的低敏感偏好")
+
+        active_event = self.store.latest_proactive_event()
+        if active_event:
+            context["active_care_event"] = {
+                key: active_event.get(key)
+                for key in ("event_type", "title", "reason", "status", "created_at")
+            }
+            used.append("当前主动关怀原因")
+
         settings = self.store.settings()
         context["product_state"] = {
             "camera_paused": settings.get("camera_paused") == "true",
             "sleep_alerts_paused": settings.get("sleep_alerts_paused") == "true",
+            "device_control_consent": settings.get(
+                "assistant_device_control_consent", "unset"
+            ),
             "contact_name": settings.get("contact_name") or "家人",
             "camera_configured": bool(self.settings.ezviz_device_serial),
             "sleep_device_configured": (

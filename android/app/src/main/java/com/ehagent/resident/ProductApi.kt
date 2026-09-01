@@ -60,7 +60,31 @@ data class SleepCard(
     val syncMessage: String? = null,
     val nightAwakening: NightAwakening = NightAwakening(),
 )
-data class Dashboard(val greeting: String = "您好", val subtitle: String = "今天也安心生活", val safety: SafetyCard = SafetyCard(), val sleep: SleepCard = SleepCard(), val contactName: String = "家人", val contactPhone: String = "")
+data class ProactiveEvent(
+    val id: String,
+    val eventType: String,
+    val title: String,
+    val message: String,
+    val reason: String,
+    val status: String,
+    val priority: String,
+)
+data class ProfileFact(
+    val id: String,
+    val factType: String,
+    val displayText: String,
+    val status: String,
+    val source: String,
+)
+data class Dashboard(
+    val greeting: String = "您好",
+    val subtitle: String = "今天也安心生活",
+    val safety: SafetyCard = SafetyCard(),
+    val sleep: SleepCard = SleepCard(),
+    val contactName: String = "家人",
+    val contactPhone: String = "",
+    val activeCare: ProactiveEvent? = null,
+)
 data class DeviceState(
     val cameraConfigured: Boolean = false,
     val cameraOnline: Boolean? = null,
@@ -100,7 +124,13 @@ data class HazardRegion(
     val y2: Float,
 )
 data class AssistantSource(val title: String, val url: String)
-data class AssistantAction(val id: String, val label: String, val status: String)
+data class AssistantAction(
+    val id: String,
+    val label: String,
+    val status: String,
+    val kind: String = "",
+    val followUpMessage: AssistantMessage? = null,
+)
 data class AssistantMessage(
     val id: String,
     val role: String,
@@ -112,6 +142,10 @@ data class AssistantMessage(
 data class AssistantChatResult(
     val conversationId: String,
     val userMessage: AssistantMessage,
+    val assistantMessage: AssistantMessage,
+)
+data class AssistantStartResult(
+    val conversationId: String,
     val assistantMessage: AssistantMessage,
 )
 
@@ -152,6 +186,7 @@ class ProductApi(private val baseUrl: String) {
         val metrics = baseline?.optJSONObject("metrics")
         val sync = sleep.optJSONObject("sync")
         val nightAwakening = sleep.optJSONObject("night_awakening")
+        val care = root.optJSONObject("care")
         return Dashboard(
             greeting = root.optString("greeting", "您好"), subtitle = root.optString("subtitle", "今天也安心生活"),
             safety = SafetyCard(safety.optString("status"), safety.optString("headline"), safety.optString("detail"), safety.optJSONObject("task")?.optString("id")),
@@ -180,7 +215,8 @@ class ProductApi(private val baseUrl: String) {
                 nightAwakening = nightAwakening?.toNightAwakening() ?: NightAwakening(),
             ),
             contactName = root.getJSONObject("help").optString("contact_name", "家人"),
-            contactPhone = root.getJSONObject("help").optString("contact_phone", "")
+            contactPhone = root.getJSONObject("help").optString("contact_phone", ""),
+            activeCare = care?.optJSONObject("active")?.toProactiveEvent(),
         )
     }
 
@@ -298,8 +334,17 @@ class ProductApi(private val baseUrl: String) {
 
     suspend fun sendHelp(message: String) = request("/api/v1/resident/help", "POST", JSONObject().put("request_type", "contact").put("message", message))
     suspend fun taskAction(taskId: String, action: String) = request("/api/v1/resident/safety/tasks/$taskId/actions", "POST", JSONObject().put("action", action))
-    suspend fun updatePause(camera: Boolean? = null, sleep: Boolean? = null) = request("/api/v1/resident/settings", "PUT", JSONObject().apply { camera?.let { put("camera_paused", it) }; sleep?.let { put("sleep_alerts_paused", it) } })
+    suspend fun updatePause(camera: Boolean? = null, sleep: Boolean? = null, proactive: Boolean? = null) = request("/api/v1/resident/settings", "PUT", JSONObject().apply { camera?.let { put("camera_paused", it) }; sleep?.let { put("sleep_alerts_paused", it) }; proactive?.let { put("proactive_care_paused", it) } })
     suspend fun updateContact(name: String, phone: String) = request("/api/v1/resident/settings", "PUT", JSONObject().put("contact_name", name).put("contact_phone", phone))
+    suspend fun updatePrivacy(
+        deviceControlConsent: String? = null,
+        psychologicalCare: Boolean? = null,
+        retentionDays: Int? = null,
+    ) = request("/api/v1/resident/settings", "PUT", JSONObject().apply {
+        deviceControlConsent?.let { put("assistant_device_control_consent", it) }
+        psychologicalCare?.let { put("psychological_care_enabled", it) }
+        retentionDays?.let { put("evidence_retention_days", it) }
+    })
     suspend fun sendFeedback(topic: String, message: String) = request("/api/v1/resident/feedback", "POST", JSONObject().put("topic", topic).put("message", message))
     suspend fun settings(): JSONObject = request("/api/v1/resident/settings")
     suspend fun syncSleep() = request(
@@ -324,7 +369,9 @@ class ProductApi(private val baseUrl: String) {
     ): AssistantChatResult {
         val body = JSONObject().put("message", message)
         conversationId?.let { body.put("conversation_id", it) }
-        val root = request("/api/v1/assistant/chat", "POST", body)
+        val root = request(
+            "/api/v1/assistant/chat", "POST", body, readTimeoutMillis = 120_000,
+        )
         return AssistantChatResult(
             conversationId = root.getString("conversation_id"),
             userMessage = root.getJSONObject("user_message").toAssistantMessage(),
@@ -338,9 +385,37 @@ class ProductApi(private val baseUrl: String) {
     }
 
     suspend fun confirmAssistantAction(actionId: String): AssistantAction {
-        return request("/api/v1/assistant/actions/$actionId/confirm", "POST")
+        return request(
+            "/api/v1/assistant/actions/$actionId/confirm", "POST",
+            readTimeoutMillis = 120_000,
+        )
             .toAssistantAction()
     }
+
+    suspend fun startProactiveEvent(eventId: String): AssistantStartResult {
+        val root = request("/api/v1/assistant/events/$eventId/start", "POST")
+        return AssistantStartResult(
+            conversationId = root.getString("conversation_id"),
+            assistantMessage = root.getJSONObject("assistant_message").toAssistantMessage(),
+        )
+    }
+
+    suspend fun startProfileOnboarding(): AssistantStartResult {
+        val root = request("/api/v1/assistant/profile-onboarding/start", "POST")
+        return AssistantStartResult(
+            conversationId = root.getString("conversation_id"),
+            assistantMessage = root.getJSONObject("assistant_message").toAssistantMessage(),
+        )
+    }
+
+    suspend fun profileFacts(): List<ProfileFact> {
+        val root = request("/api/v1/resident/profile")
+        return (root.optJSONArray("visible") ?: root.getJSONArray("confirmed"))
+            .mapObjects { it.toProfileFact() }
+    }
+
+    suspend fun deleteProfileFact(factId: String) =
+        request("/api/v1/resident/profile/facts/$factId", "DELETE")
 }
 
 private fun JSONObject.optionalDouble(key: String): Double? = if (has(key) && !isNull(key)) optDouble(key) else null
@@ -348,7 +423,7 @@ private fun JSONObject.optionalInt(key: String): Int? = if (has(key) && !isNull(
 private fun JSONObject.optionalString(key: String): String? =
     if (has(key) && !isNull(key)) optString(key).takeIf { it.isNotBlank() } else null
 
-private fun JSONObject.toAssistantMessage() = AssistantMessage(
+private fun JSONObject.toAssistantMessage(): AssistantMessage = AssistantMessage(
     id = getString("id"),
     role = getString("role"),
     content = getString("content"),
@@ -394,10 +469,30 @@ internal fun JSONObject.toNightAwakening() = NightAwakening(
     ),
 )
 
-private fun JSONObject.toAssistantAction() = AssistantAction(
+private fun JSONObject.toAssistantAction(): AssistantAction = AssistantAction(
     id = getString("id"),
     label = getString("label"),
     status = getString("status"),
+    kind = optString("kind"),
+    followUpMessage = optJSONObject("follow_up_message")?.toAssistantMessage(),
+)
+
+private fun JSONObject.toProactiveEvent() = ProactiveEvent(
+    id = getString("id"),
+    eventType = getString("event_type"),
+    title = getString("title"),
+    message = getString("message"),
+    reason = getString("reason"),
+    status = getString("status"),
+    priority = getString("priority"),
+)
+
+private fun JSONObject.toProfileFact() = ProfileFact(
+    id = getString("id"),
+    factType = getString("fact_type"),
+    displayText = getString("display_text"),
+    status = getString("status"),
+    source = getString("source"),
 )
 
 private fun <T> JSONArray.mapObjects(transform: (JSONObject) -> T): List<T> =

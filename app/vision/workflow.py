@@ -115,6 +115,25 @@ def record_safety_result(
         result.get("evidence_path"),
         stored_result,
     )
+    if is_new_alert:
+        store.create_proactive_event(
+            event_type="environment_risk",
+            title=assessment["headline"],
+            message=(
+                f"我在{settings.safety_area_name}发现需要留意的情况：{reason} "
+                f"{assessment['action_text']}您现在方便处理吗？如果不方便，我可以稍后提醒您。"
+            ),
+            reason=f"C6c抓图经VLM和固定规则判断为{risk_level}等级通道风险",
+            source=source,
+            source_ref=check["id"],
+            priority="high" if risk_level == "high" else "normal",
+            context={
+                "check_id": check["id"],
+                "task_id": task["id"] if task else None,
+                "risk_level": risk_level,
+                "evidence_path": result.get("evidence_path"),
+            },
+        )
 
     return {
         **stored_result,

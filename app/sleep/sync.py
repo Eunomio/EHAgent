@@ -4,6 +4,7 @@ import asyncio
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
+from app.care.rules import create_sleep_change_event
 from app.core.config import Settings
 from app.devices.ezviz import EzvizClient, EzvizError
 from app.llm.service import LlmService
@@ -37,6 +38,7 @@ class SleepSyncService:
             analysis = self.store.add_llm_output(
                 "sleep", record["id"], copy.model_dump(), source, self.llm.model_name
             )
+            event = create_sleep_change_event(self.store, record)
         except EzvizError as exc:
             self.store.finish_sleep_sync(run_id, "failed", str(exc), "ezviz_error")
             raise
@@ -44,7 +46,10 @@ class SleepSyncService:
             self.store.finish_sleep_sync(run_id, "failed", "睡眠同步暂时失败", type(exc).__name__)
             raise
         self.store.finish_sleep_sync(run_id, "success", "睡眠数据已同步")
-        return {"success": True, "sleep": record, "analysis": analysis}
+        return {
+            "success": True, "sleep": record, "analysis": analysis,
+            "proactive_event": event,
+        }
 
     async def run(self) -> None:
         if not self.settings.sleep_auto_sync_enabled or not self.ezviz.sleep_configured:

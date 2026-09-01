@@ -254,7 +254,7 @@ private fun AssistantBubble(
                     )
                 }
                 message.sources.forEach { source -> SourceLink(source) }
-                message.actions.forEach { action ->
+                message.actions.filter { it.status != "dismissed" }.forEach { action ->
                     Button(
                         onClick = { onConfirm(action.id) },
                         enabled = action.status == "pending",
@@ -266,7 +266,7 @@ private fun AssistantBubble(
                             null,
                         )
                         Spacer(Modifier.width(7.dp))
-                        Text(if (action.status == "completed") "已通知家人" else action.label)
+                        Text(if (action.status == "completed") "已完成：${action.label}" else action.label)
                     }
                 }
             }

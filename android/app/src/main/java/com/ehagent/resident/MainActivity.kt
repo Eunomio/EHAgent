@@ -6,21 +6,28 @@ import android.os.Build
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.ActivityNotFoundException
 import android.content.pm.ActivityInfo
 import android.content.Intent
 import android.net.Uri
 import android.app.Application
+import android.speech.RecognizerIntent
 import android.view.SurfaceView
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,6 +39,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -43,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -58,6 +67,16 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+
+private enum class HomeModule(val storageKey: String, val title: String) {
+    CARE("care", "主动关怀"),
+    SAFETY("safety", "居家安全"),
+    SLEEP("sleep", "昨晚睡眠"),
+    CONTACT("contact", "联系家人"),
+    DEVICES("devices", "设备状态"),
+}
+
+private val defaultHomeModules = HomeModule.entries.toList()
 
 internal val Brand = Color(0xFF2E7D67)
 internal val BrandSoft = Color(0xFFE4F3ED)
@@ -96,7 +115,8 @@ private fun EHAgentTheme(content: @Composable () -> Unit) {
 
 private enum class Page(val label: String, val icon: ImageVector) {
     HOME("首页", Icons.Rounded.Home), SAFETY("安全", Icons.Rounded.HealthAndSafety),
-    SLEEP("睡眠", Icons.Rounded.Bedtime), ME("我的", Icons.Rounded.Person),
+    SLEEP("睡眠", Icons.Rounded.Bedtime), PRIVACY("隐私", Icons.Rounded.PrivacyTip),
+    ME("画像", Icons.Rounded.Person),
     ASSISTANT("问小安", Icons.Rounded.AutoAwesome),
 }
 
@@ -104,7 +124,7 @@ private enum class Page(val label: String, val icon: ImageVector) {
 private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf(Page.HOME) }
-    val mainPages = remember { listOf(Page.HOME, Page.SAFETY, Page.SLEEP, Page.ME) }
+    val mainPages = remember { listOf(Page.HOME, Page.SAFETY, Page.SLEEP, Page.PRIVACY, Page.ME) }
     LaunchedEffect(viewModel) {
         while (isActive) {
             delay(2_000)
@@ -114,16 +134,20 @@ private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.
     Scaffold(
         containerColor = Canvas,
         bottomBar = {
-            if (page != Page.ASSISTANT) {
-                NavigationBar(containerColor = Color.White, tonalElevation = 3.dp) {
-                    mainPages.forEach { item ->
-                        NavigationBarItem(selected = page == item, onClick = { page = item }, icon = { Icon(item.icon, item.label) }, label = { Text(item.label, fontSize = 14.sp) }, colors = NavigationBarItemDefaults.colors(selectedIconColor = Brand, selectedTextColor = Brand, indicatorColor = BrandSoft))
-                    }
+            NavigationBar(containerColor = Color.White, tonalElevation = 3.dp) {
+                mainPages.forEach { item ->
+                    NavigationBarItem(
+                        selected = page == item || (page == Page.ASSISTANT && item == Page.HOME),
+                        onClick = { page = item },
+                        icon = { Icon(item.icon, item.label) },
+                        label = { Text(item.label, fontSize = 13.sp) },
+                        colors = NavigationBarItemDefaults.colors(selectedIconColor = Brand, selectedTextColor = Brand, indicatorColor = BrandSoft),
+                    )
                 }
             }
         },
         floatingActionButton = {
-            if (page != Page.ASSISTANT) {
+            if (page != Page.ASSISTANT && page != Page.HOME) {
                 DraggableAssistantButton { page = Page.ASSISTANT }
             }
         },
@@ -134,7 +158,11 @@ private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.
                 Page.HOME -> HomePage(state, viewModel, onSafety = { page = Page.SAFETY }, onSleep = { page = Page.SLEEP }, onAssistant = { page = Page.ASSISTANT })
                 Page.SAFETY -> SafetyPage(state, viewModel)
                 Page.SLEEP -> SleepPage(state, viewModel)
-                Page.ME -> MePage(state, viewModel)
+                Page.PRIVACY -> PrivacyPage(state, viewModel)
+                Page.ME -> MePage(state, viewModel) {
+                    viewModel.startProfileOnboarding()
+                    page = Page.ASSISTANT
+                }
                 Page.ASSISTANT -> AssistantPage(state, viewModel, onBack = { page = Page.HOME })
             }
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Brand)
@@ -159,46 +187,283 @@ private fun PageBody(content: @Composable ColumnScope.() -> Unit) {
 @Composable
 private fun HomePage(state: UiState, vm: MainViewModel, onSafety: () -> Unit, onSleep: () -> Unit, onAssistant: () -> Unit) {
     val context = LocalContext.current
-    PageBody {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(state.dashboard.greeting, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Ink)
-                Text(state.dashboard.subtitle, color = Muted, fontSize = 17.sp)
-            }
-            FilledIconButton(onClick = vm::refresh, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Brand)) { Icon(Icons.Rounded.Refresh, "刷新") }
+    val preferences = remember(context) { context.getSharedPreferences("home_layout", Context.MODE_PRIVATE) }
+    val storedOrder = remember {
+        preferences.getString("module_order", null)
+            ?.split(',')
+            ?.mapNotNull { key -> HomeModule.entries.firstOrNull { it.storageKey == key } }
+            ?.distinct()
+            .orEmpty()
+    }
+    val modules = remember {
+        mutableStateListOf<HomeModule>().apply {
+            addAll(storedOrder + defaultHomeModules.filterNot(storedOrder::contains))
         }
-        state.error?.let { ConnectionBanner(it) }
-        state.notice?.let { NoticeBanner(it) }
-        Card(
-            onClick = onAssistant,
-            shape = RoundedCornerShape(26.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF2F6F62)),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Row(Modifier.padding(21.dp), verticalAlignment = Alignment.CenterVertically) {
-                RoundIcon(Icons.Rounded.AutoAwesome, Color.White, Color.White.copy(alpha = .16f))
-                Spacer(Modifier.width(14.dp))
+    }
+    val visibleModules = modules.filter { it != HomeModule.CARE || state.dashboard.activeCare != null }
+    val listState = rememberLazyListState()
+    var draggedModule by remember { mutableStateOf<HomeModule?>(null) }
+    var draggedDistance by remember { mutableFloatStateOf(0f) }
+
+    fun saveOrder() {
+        preferences.edit().putString("module_order", modules.joinToString(",") { it.storageKey }).apply()
+    }
+
+    LaunchedEffect(Unit) { vm.loadAssistantConversation() }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, top = 22.dp, end = 20.dp, bottom = 92.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item(key = "home_header") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("有事问小安", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Text("生活问题、睡眠和家中情况都可以问", color = Color.White.copy(.82f), fontSize = 16.sp)
+                    Text(state.dashboard.greeting, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Ink)
+                    Text(state.dashboard.subtitle, color = Muted, fontSize = 17.sp)
                 }
-                Icon(Icons.Rounded.ChevronRight, "打开", tint = Color.White)
+                FilledIconButton(onClick = vm::refresh, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Brand)) { Icon(Icons.Rounded.Refresh, "刷新") }
             }
         }
-        SafetyHomeCard(state.dashboard.safety, onSafety)
-        SleepHomeCard(state.dashboard.sleep, onSleep)
-        ContactCard(state.dashboard.contactName) { dial(context, state.dashboard.contactPhone) }
-        Text("设备状态", fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
-        DeviceRow(Icons.Rounded.Videocam, "通道摄像头", deviceText(state.devices.cameraConfigured, state.devices.cameraOnline))
-        DeviceRow(
-            Icons.Rounded.Bed,
-            "无感睡眠助手",
-            when {
-                !state.devices.sleepConfigured -> "等待连接"
-                state.devices.sleepLastReportAt != null -> "已同步"
-                else -> "已连接"
-            },
-        )
+        state.error?.let { error -> item(key = "home_error") { ConnectionBanner(error) } }
+        state.notice?.let { notice -> item(key = "home_notice") { NoticeBanner(notice) } }
+        item(key = "assistant_primary") { HomeAssistantPanel(state, vm, onAssistant) }
+        item(key = "module_hint") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("生活模块", fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Icon(Icons.Rounded.DragHandle, null, tint = Muted)
+                Spacer(Modifier.width(5.dp))
+                Text("长按卡片可调整顺序", color = Muted, fontSize = 14.sp)
+            }
+        }
+        items(visibleModules, key = { "module_${it.storageKey}" }) { module ->
+            val isDragging = draggedModule == module
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .zIndex(if (isDragging) 1f else 0f)
+                    .graphicsLayer {
+                        translationY = if (isDragging) draggedDistance else 0f
+                        shadowElevation = if (isDragging) 18f else 0f
+                    }
+                    .pointerInput(module, visibleModules) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                draggedModule = module
+                                draggedDistance = 0f
+                            },
+                            onDragCancel = {
+                                draggedModule = null
+                                draggedDistance = 0f
+                            },
+                            onDragEnd = {
+                                draggedModule = null
+                                draggedDistance = 0f
+                                saveOrder()
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                draggedDistance += dragAmount.y
+                                val currentInfo = listState.layoutInfo.visibleItemsInfo
+                                    .firstOrNull { it.key == "module_${module.storageKey}" }
+                                    ?: return@detectDragGesturesAfterLongPress
+                                val draggedCenter = currentInfo.offset + currentInfo.size / 2 + draggedDistance
+                                val targetInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { info ->
+                                    info.key.toString().startsWith("module_") &&
+                                        info.key != currentInfo.key &&
+                                        draggedCenter >= info.offset &&
+                                        draggedCenter <= info.offset + info.size
+                                } ?: return@detectDragGesturesAfterLongPress
+                                val target = HomeModule.entries.firstOrNull {
+                                    targetInfo.key == "module_${it.storageKey}"
+                                } ?: return@detectDragGesturesAfterLongPress
+                                val fromIndex = modules.indexOf(module)
+                                val toIndex = modules.indexOf(target)
+                                if (fromIndex >= 0 && toIndex >= 0 && fromIndex != toIndex) {
+                                    modules.removeAt(fromIndex)
+                                    modules.add(toIndex, module)
+                                    draggedDistance += currentInfo.offset - targetInfo.offset
+                                }
+                            },
+                        )
+                    },
+            ) {
+                when (module) {
+                    HomeModule.CARE -> state.dashboard.activeCare?.let { event ->
+                        ProactiveCareCard(event) {
+                            vm.startProactiveEvent(event.id)
+                            onAssistant()
+                        }
+                    }
+                    HomeModule.SAFETY -> SafetyHomeCard(state.dashboard.safety, onSafety)
+                    HomeModule.SLEEP -> SleepHomeCard(state.dashboard.sleep, onSleep)
+                    HomeModule.CONTACT -> ContactCard(state.dashboard.contactName) {
+                        dial(context, state.dashboard.contactPhone)
+                    }
+                    HomeModule.DEVICES -> HomeDevicesCard(state)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeAssistantPanel(state: UiState, vm: MainViewModel, onAssistant: () -> Unit) {
+    val context = LocalContext.current
+    var input by remember { mutableStateOf("") }
+    val recentMessages = state.assistantMessages.takeLast(2)
+    val voiceLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.let { input = it }
+    }
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF2F6F62)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RoundIcon(Icons.Rounded.AutoAwesome, Color.White, Color.White.copy(alpha = .16f))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("和小安聊一聊", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text("可以说说今天的感受，也可以问睡眠和居家安全", color = Color.White.copy(.82f), fontSize = 15.sp)
+                }
+                TextButton(onClick = onAssistant) { Text("完整对话", color = Color.White) }
+            }
+            if (recentMessages.isEmpty()) {
+                Surface(color = Color.White.copy(alpha = .12f), shape = RoundedCornerShape(18.dp)) {
+                    Text(
+                        "您好，我是小安。今天身体和心情怎么样？",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        lineHeight = 27.sp,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+            } else {
+                recentMessages.forEach { message ->
+                    Surface(
+                        color = if (message.role == "user") Color.White.copy(alpha = .14f) else Color.White,
+                        contentColor = if (message.role == "user") Color.White else Ink,
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth(if (message.role == "user") .88f else 1f)
+                            .align(if (message.role == "user") Alignment.End else Alignment.Start),
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                            Text(message.content, fontSize = 17.sp, lineHeight = 25.sp)
+                            if (message.role != "user") {
+                                message.actions.filter { it.status == "pending" }.forEach { action ->
+                                    Button(
+                                        onClick = { vm.confirmAssistantAction(action.id) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(14.dp),
+                                    ) { Text(action.label, fontSize = 16.sp) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (state.assistantLoading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("小安正在想…", color = Color.White.copy(.85f))
+                }
+            }
+            state.assistantError?.let { Text(it, color = Color(0xFFFFD7D0), fontSize = 14.sp) }
+            Row(verticalAlignment = Alignment.Bottom) {
+                FilledIconButton(
+                    onClick = {
+                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+                            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出您想和小安聊的内容")
+                        }
+                        try {
+                            voiceLauncher.launch(intent)
+                        } catch (_: ActivityNotFoundException) {
+                            Toast.makeText(context, "这部设备暂时无法使用语音输入", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    modifier = Modifier.size(56.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(.16f), contentColor = Color.White),
+                ) { Icon(Icons.Rounded.Mic, "语音输入") }
+                Spacer(Modifier.width(9.dp))
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    placeholder = { Text("和小安说点什么") },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 3,
+                    shape = RoundedCornerShape(19.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = Color.White,
+                        unfocusedContainerColor = Color.White,
+                        focusedBorderColor = Color.White,
+                        unfocusedBorderColor = Color.White,
+                    ),
+                )
+                Spacer(Modifier.width(9.dp))
+                FilledIconButton(
+                    onClick = {
+                        vm.sendAssistantMessage(input)
+                        input = ""
+                    },
+                    enabled = input.isNotBlank() && !state.assistantLoading,
+                    modifier = Modifier.size(56.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Warm, contentColor = Color.White),
+                ) { Icon(Icons.Rounded.Send, "发送") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeDevicesCard(state: UiState) {
+    Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("设备状态", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+            DeviceRow(Icons.Rounded.Videocam, "通道摄像头", deviceText(state.devices.cameraConfigured, state.devices.cameraOnline))
+            DeviceRow(
+                Icons.Rounded.Bed,
+                "无感睡眠助手",
+                when {
+                    !state.devices.sleepConfigured -> "等待连接"
+                    state.devices.sleepLastReportAt != null -> "已同步"
+                    else -> "已连接"
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProactiveCareCard(event: ProactiveEvent, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = WarmSoft),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(21.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RoundIcon(Icons.Rounded.AutoAwesome, Warm, Color.White)
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("小安主动关怀", color = Color(0xFF8B5A16), fontSize = 15.sp)
+                    Text(event.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                }
+                Icon(Icons.Rounded.ChevronRight, "回应小安")
+            }
+            Text(event.message, fontSize = 17.sp, lineHeight = 25.sp, maxLines = 3)
+            Text("为什么询问：${event.reason}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+        }
     }
 }
 
@@ -1011,19 +1276,91 @@ private fun SleepStagesCard(sleep: SleepCard) {
 }
 
 @Composable
-private fun MePage(state: UiState, vm: MainViewModel) {
+private fun MePage(state: UiState, vm: MainViewModel, onStartOnboarding: () -> Unit) {
     var url by remember(vm.backendUrl) { mutableStateOf(vm.backendUrl) }
     var contactName by remember(state.dashboard.contactName) { mutableStateOf(state.dashboard.contactName) }
     var contactPhone by remember(state.dashboard.contactPhone) { mutableStateOf(state.dashboard.contactPhone) }
     var feedback by remember { mutableStateOf("") }
+    val guidedFactTypes = setOf(
+        "living_arrangement",
+        "health_management_status",
+        "reminder_detail_preference",
+        "interaction_mode_preference",
+        "sharing_preference",
+    )
+    val guidedFactCount = state.profileFacts.map { it.factType }.toSet().intersect(guidedFactTypes).size
+    val guidedProfileComplete = guidedFactCount == guidedFactTypes.size
     PageBody {
-        PageTitle("我的", "管理家中设备和联系设置", Icons.Rounded.Person)
+        PageTitle("我的画像", "您可以查看和管理小安了解的内容", Icons.Rounded.Person)
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = BrandSoft)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RoundIcon(Icons.Rounded.Badge, Brand, Color.White)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("让小安更了解您", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (guidedProfileComplete) "基础画像已保存。再次进入可查看记录或只修改一项。"
+                            else "通过五个简单选择填写基础情况，任何一项都可以暂不填写。",
+                            color = Muted,
+                            lineHeight = 23.sp,
+                        )
+                    }
+                }
+                Button(
+                    onClick = onStartOnboarding,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Icon(Icons.Rounded.Chat, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        when {
+                            guidedProfileComplete -> "查看或修改"
+                            guidedFactCount > 0 -> "继续填写"
+                            else -> "开始填写"
+                        },
+                        fontSize = 17.sp,
+                    )
+                }
+            }
+        }
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("家庭服务连接", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Text("手机和家中电脑需连接同一个网络", color = Muted)
                 OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("服务地址") }, placeholder = { Text("http://192.168.1.10:8000") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(onClick = { vm.saveBackend(url) }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(15.dp)) { Text("保存并连接", fontSize = 17.sp) }
+            }
+        }
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("小安记得的情况", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("引导填写和日常对话中记住的内容都会显示在这里。", color = Muted)
+                if (state.profileFacts.isEmpty()) {
+                    Text("暂时没有已确认的内容", color = Muted)
+                } else {
+                    state.profileFacts.forEach { fact ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.CheckCircle, null, tint = Brand)
+                            Spacer(Modifier.width(9.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(fact.displayText, fontSize = 17.sp)
+                                Text(
+                                    when {
+                                        fact.source == "guided_onboarding" -> "由您在画像引导中选择"
+                                        fact.status == "inferred" -> "小安从日常对话中推测"
+                                        fact.source.startsWith("conversation_") -> "由您在日常对话中确认"
+                                        else -> "由您填写"
+                                    },
+                                    color = Muted,
+                                    fontSize = 13.sp,
+                                )
+                            }
+                            TextButton(onClick = { vm.deleteProfileFact(fact.id) }) { Text("删除") }
+                        }
+                    }
+                }
             }
         }
         state.notice?.let { NoticeBanner(it) }
@@ -1090,9 +1427,110 @@ private fun MePage(state: UiState, vm: MainViewModel) {
                 }
             }
         }
-        Text("隐私开关", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-        SettingsSwitch("通道检查", if (state.cameraPaused) "当前已暂停" else "当前已开启", !state.cameraPaused) { vm.setCameraPaused(!it) }
-        SettingsSwitch("睡眠提醒", if (state.sleepPaused) "当前已暂停" else "当前已开启", !state.sleepPaused) { vm.setSleepPaused(!it) }
+    }
+}
+
+@Composable
+private fun PrivacyPage(state: UiState, vm: MainViewModel) {
+    PageBody {
+        PageTitle("隐私设置", "由您决定小安能知道什么、控制什么", Icons.Rounded.PrivacyTip)
+        state.notice?.let { NoticeBanner(it) }
+        state.error?.let { ConnectionBanner(it) }
+
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = BrandSoft)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RoundIcon(Icons.Rounded.AutoAwesome, Brand, Color.White)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("小安是大脑，设备是四肢", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                        Text("小安统一理解您的话，再调用获得授权的设备完成操作。", color = Muted, lineHeight = 23.sp)
+                    }
+                }
+                Text("目前可控制：通道检查、睡眠提醒和主动关怀。新增设备接入后也会在这里说明。", fontSize = 15.sp, lineHeight = 23.sp)
+            }
+        }
+
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
+                Text("设备控制权限", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                Text("只需选择一次。小安执行您明确说出的设备指令；您可以随时修改或撤回。", color = Muted, lineHeight = 23.sp)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ChoiceButton(
+                        "允许控制",
+                        state.assistantDeviceControlConsent == "allowed",
+                        Modifier.weight(1f),
+                    ) { vm.setDeviceControlConsent("allowed") }
+                    ChoiceButton(
+                        "不允许",
+                        state.assistantDeviceControlConsent == "denied",
+                        Modifier.weight(1f),
+                    ) { vm.setDeviceControlConsent("denied") }
+                }
+                if (state.assistantDeviceControlConsent == "unset") {
+                    Text("尚未选择。首次通过对话控制设备时，小安会提供以上两个选项。", color = Color(0xFF8B5A16), fontSize = 14.sp)
+                }
+            }
+        }
+
+        Text("数据与关怀", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+        SettingsSwitch(
+            "心理健康主动关怀",
+            if (state.psychologicalCareEnabled) "结合睡眠和日常对话发现值得关心的变化" else "当前不会生成心理健康主动关怀",
+            state.psychologicalCareEnabled,
+            vm::setPsychologicalCareEnabled,
+        )
+        SettingsSwitch(
+            "主动发起对话",
+            if (state.proactiveCarePaused) "当前已暂停普通主动关怀" else "当前已开启，每天最多主动关怀2次",
+            !state.proactiveCarePaused,
+        ) { vm.setProactiveCarePaused(!it) }
+        SettingsSwitch(
+            "通道检查",
+            if (state.cameraPaused) "当前已暂停摄像头通道分析" else "当前已开启",
+            !state.cameraPaused,
+        ) { vm.setCameraPaused(!it) }
+        SettingsSwitch(
+            "睡眠提醒",
+            if (state.sleepPaused) "当前已暂停" else "当前已开启",
+            !state.sleepPaused,
+        ) { vm.setSleepPaused(!it) }
+
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("风险证据保存时间", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("用于解释为什么产生安全提醒，到期后按服务清理规则删除。", color = Muted)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(1, 7, 30).forEach { days ->
+                        ChoiceButton(
+                            "${days}天",
+                            state.evidenceRetentionDays == days,
+                            Modifier.weight(1f),
+                        ) { vm.setEvidenceRetentionDays(days) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChoiceButton(
+    text: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    if (selected) {
+        Button(onClick = onClick, modifier = modifier.height(50.dp), shape = RoundedCornerShape(15.dp)) {
+            Icon(Icons.Rounded.Check, null)
+            Spacer(Modifier.width(6.dp))
+            Text(text)
+        }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = modifier.height(50.dp), shape = RoundedCornerShape(15.dp)) {
+            Text(text)
+        }
     }
 }
 

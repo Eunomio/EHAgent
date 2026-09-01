@@ -158,7 +158,10 @@ def test_settings_expose_only_product_options(client: TestClient) -> None:
     settings = client.get("/api/v1/resident/settings").json()
     assert set(settings) == {
         "camera_paused", "sleep_alerts_paused", "contact_name", "contact_phone",
-        "evidence_retention_days",
+        "evidence_retention_days", "proactive_care_paused",
+        "psychological_care_enabled", "quiet_start", "quiet_end",
+        "daily_proactive_limit",
+        "assistant_device_control_consent",
     }
 
 

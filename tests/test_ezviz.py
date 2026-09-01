@@ -194,6 +194,7 @@ def test_sleep_summary_maps_daily_statistics_to_product_contract() -> None:
 
         settings = Settings(
             sleep_provider="ezviz", sleep_device_id="known-device-id",
+            sleep_device_serial="",
             ezviz_access_token="test-token", ezviz_auto_token=False,
             sleep_timestamp_utc_offset_hours=8,
         )

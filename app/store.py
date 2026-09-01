@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -120,6 +120,33 @@ class ProductStore:
                     FOREIGN KEY(conversation_id) REFERENCES assistant_conversation(id),
                     FOREIGN KEY(message_id) REFERENCES assistant_message(id)
                 );
+                CREATE TABLE IF NOT EXISTS resident_profile_fact (
+                    id TEXT PRIMARY KEY, fact_type TEXT NOT NULL,
+                    value_json TEXT NOT NULL, display_text TEXT NOT NULL,
+                    status TEXT NOT NULL, source TEXT NOT NULL, source_ref TEXT,
+                    confidence REAL, consented_at TEXT, expires_at TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_profile_fact_status
+                    ON resident_profile_fact(status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS proactive_event (
+                    id TEXT PRIMARY KEY, event_type TEXT NOT NULL,
+                    title TEXT NOT NULL, message TEXT NOT NULL, reason TEXT NOT NULL,
+                    source TEXT NOT NULL, source_ref TEXT, priority TEXT NOT NULL,
+                    status TEXT NOT NULL, conversation_id TEXT,
+                    context_json TEXT NOT NULL DEFAULT '{}',
+                    response_json TEXT NOT NULL DEFAULT '{}',
+                    remind_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    UNIQUE(event_type, source, source_ref)
+                );
+                CREATE INDEX IF NOT EXISTS ix_proactive_event_status
+                    ON proactive_event(status, created_at DESC);
+                CREATE TABLE IF NOT EXISTS intervention_session (
+                    id TEXT PRIMARY KEY, event_id TEXT, intervention_id TEXT NOT NULL,
+                    title TEXT NOT NULL, status TEXT NOT NULL, helpful INTEGER,
+                    feedback TEXT, started_at TEXT NOT NULL, completed_at TEXT,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             self._migrate_sleep_summary(db)
@@ -134,6 +161,11 @@ class ProductStore:
                 "camera_paused": "false", "sleep_alerts_paused": "false",
                 "contact_name": "家人", "contact_phone": "",
                 "evidence_retention_days": "7",
+                "proactive_care_paused": "false",
+                "psychological_care_enabled": "true",
+                "quiet_start": "21:30", "quiet_end": "08:00",
+                "daily_proactive_limit": "2",
+                "assistant_device_control_consent": "unset",
             }
             db.executemany(
                 "INSERT OR IGNORE INTO app_setting(key,value) VALUES (?,?)", defaults.items()
@@ -752,6 +784,276 @@ class ProductStore:
             row["needs_follow_up"] = bool(row["needs_follow_up"])
         return rows
 
+    def create_profile_fact(
+        self,
+        fact_type: str,
+        value: dict[str, Any],
+        display_text: str,
+        source: str,
+        source_ref: str | None = None,
+        confidence: float | None = None,
+        status: str = "candidate",
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Create an auditable profile fact without silently confirming it."""
+
+        with self._connect() as db:
+            existing = db.execute(
+                "SELECT * FROM resident_profile_fact WHERE fact_type=? AND display_text=? "
+                "AND status IN ('candidate','confirmed') ORDER BY updated_at DESC LIMIT 1",
+                (fact_type, display_text),
+            ).fetchone()
+        if existing:
+            return self._decode_profile_fact(dict(existing))
+        timestamp = now_iso()
+        record = {
+            "id": str(uuid4()), "fact_type": fact_type,
+            "value_json": json.dumps(value, ensure_ascii=False),
+            "display_text": display_text, "status": status, "source": source,
+            "source_ref": source_ref, "confidence": confidence,
+            "consented_at": timestamp if status == "confirmed" else None,
+            "expires_at": expires_at, "created_at": timestamp, "updated_at": timestamp,
+        }
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO resident_profile_fact VALUES "
+                "(:id,:fact_type,:value_json,:display_text,:status,:source,:source_ref,"
+                ":confidence,:consented_at,:expires_at,:created_at,:updated_at)",
+                record,
+            )
+        return self._decode_profile_fact(record)
+
+    def profile_facts(
+        self, statuses: tuple[str, ...] = ("confirmed",), limit: int = 50
+    ) -> list[dict[str, Any]]:
+        placeholders = ",".join("?" for _ in statuses)
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(
+                f"SELECT * FROM resident_profile_fact WHERE status IN ({placeholders}) "
+                "AND (expires_at IS NULL OR expires_at>?) ORDER BY updated_at DESC LIMIT ?",
+                (*statuses, now_iso(), limit),
+            )]
+        return [self._decode_profile_fact(row) for row in rows]
+
+    def get_profile_fact(self, fact_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM resident_profile_fact WHERE id=?", (fact_id,)
+            ).fetchone()
+        return self._decode_profile_fact(dict(row)) if row else None
+
+    def update_profile_fact_status(
+        self, fact_id: str, status: str
+    ) -> dict[str, Any] | None:
+        timestamp = now_iso()
+        with self._connect() as db:
+            db.execute(
+                "UPDATE resident_profile_fact SET status=?,consented_at=?,updated_at=? WHERE id=?",
+                (status, timestamp if status == "confirmed" else None, timestamp, fact_id),
+            )
+        return self.get_profile_fact(fact_id)
+
+    def delete_profile_fact(self, fact_id: str) -> bool:
+        with self._connect() as db:
+            cursor = db.execute("DELETE FROM resident_profile_fact WHERE id=?", (fact_id,))
+        return cursor.rowcount > 0
+
+    def expire_profile_facts_by_type(self, fact_type: str) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE resident_profile_fact SET status='expired',consented_at=NULL,"
+                "updated_at=? WHERE fact_type=? AND status IN ('confirmed','inferred')",
+                (now_iso(), fact_type),
+            )
+
+    def create_proactive_event(
+        self,
+        event_type: str,
+        title: str,
+        message: str,
+        reason: str,
+        source: str,
+        source_ref: str | None,
+        priority: str = "normal",
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        settings = self.settings()
+        if settings.get("proactive_care_paused") == "true":
+            return None
+        if event_type == "sleep_change" and settings.get("sleep_alerts_paused") == "true":
+            return None
+        with self._connect() as db:
+            if source_ref:
+                existing = db.execute(
+                    "SELECT * FROM proactive_event WHERE event_type=? AND source=? AND source_ref=?",
+                    (event_type, source, source_ref),
+                ).fetchone()
+                if existing:
+                    return self._decode_proactive_event(dict(existing))
+            limit = int(settings.get("daily_proactive_limit", "2"))
+            today = datetime.now().astimezone().date().isoformat()
+            count = db.execute(
+                "SELECT COUNT(*) AS total FROM proactive_event WHERE substr(created_at,1,10)=?",
+                (today,),
+            ).fetchone()["total"]
+            if count >= limit and priority not in {"high", "urgent"}:
+                return None
+        remind_at = None
+        if priority not in {"high", "urgent"}:
+            now = datetime.now().astimezone()
+            quiet_start = time.fromisoformat(settings.get("quiet_start", "21:30"))
+            quiet_end = time.fromisoformat(settings.get("quiet_end", "08:00"))
+            if quiet_start <= quiet_end:
+                in_quiet = quiet_start <= now.time() < quiet_end
+                end_date = now.date()
+            else:
+                in_quiet = now.time() >= quiet_start or now.time() < quiet_end
+                end_date = now.date() + timedelta(days=1) if now.time() >= quiet_start else now.date()
+            if in_quiet:
+                remind_at = datetime.combine(
+                    end_date, quiet_end, tzinfo=now.tzinfo
+                ).isoformat(timespec="seconds")
+        timestamp = now_iso()
+        record = {
+            "id": str(uuid4()), "event_type": event_type, "title": title,
+            "message": message, "reason": reason, "source": source,
+            "source_ref": source_ref, "priority": priority, "status": "pending",
+            "conversation_id": None,
+            "context_json": json.dumps(context or {}, ensure_ascii=False),
+            "response_json": "{}", "remind_at": remind_at,
+            "created_at": timestamp, "updated_at": timestamp,
+        }
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO proactive_event VALUES "
+                "(:id,:event_type,:title,:message,:reason,:source,:source_ref,:priority,"
+                ":status,:conversation_id,:context_json,:response_json,:remind_at,"
+                ":created_at,:updated_at)",
+                record,
+            )
+        return self._decode_proactive_event(record)
+
+    def latest_proactive_event(self) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM proactive_event WHERE status IN ('pending','engaged','later') "
+                "AND (remind_at IS NULL OR remind_at<=?) ORDER BY "
+                "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, "
+                "created_at DESC LIMIT 1",
+                (now_iso(),),
+            ).fetchone()
+        return self._decode_proactive_event(dict(row)) if row else None
+
+    def proactive_events(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM proactive_event ORDER BY created_at DESC LIMIT ?", (limit,)
+            )]
+        return [self._decode_proactive_event(row) for row in rows]
+
+    def get_proactive_event(self, event_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM proactive_event WHERE id=?", (event_id,)).fetchone()
+        return self._decode_proactive_event(dict(row)) if row else None
+
+    def proactive_event_for_conversation(
+        self, conversation_id: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM proactive_event WHERE conversation_id=? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (conversation_id,),
+            ).fetchone()
+        return self._decode_proactive_event(dict(row)) if row else None
+
+    def update_proactive_event(
+        self,
+        event_id: str,
+        status: str,
+        response: dict[str, Any] | None = None,
+        conversation_id: str | None = None,
+        remind_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE proactive_event SET status=?,response_json=?,"
+                "conversation_id=COALESCE(?,conversation_id),remind_at=?,updated_at=? WHERE id=?",
+                (
+                    status, json.dumps(response or {}, ensure_ascii=False),
+                    conversation_id, remind_at, now_iso(), event_id,
+                ),
+            )
+        return self.get_proactive_event(event_id)
+
+    def start_intervention(
+        self, intervention_id: str, title: str, event_id: str | None = None
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        record = {
+            "id": str(uuid4()), "event_id": event_id,
+            "intervention_id": intervention_id, "title": title,
+            "status": "started", "helpful": None, "feedback": None,
+            "started_at": timestamp, "completed_at": None, "updated_at": timestamp,
+        }
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO intervention_session VALUES "
+                "(:id,:event_id,:intervention_id,:title,:status,:helpful,:feedback,"
+                ":started_at,:completed_at,:updated_at)",
+                record,
+            )
+        return {**record, "helpful": None}
+
+    def intervention_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM intervention_session ORDER BY started_at DESC LIMIT ?", (limit,)
+            )]
+        for row in rows:
+            row["helpful"] = None if row["helpful"] is None else bool(row["helpful"])
+        return rows
+
+    def update_intervention_session(
+        self,
+        session_id: str,
+        status: str,
+        helpful: bool | None = None,
+        feedback: str | None = None,
+    ) -> dict[str, Any] | None:
+        timestamp = now_iso()
+        with self._connect() as db:
+            db.execute(
+                "UPDATE intervention_session SET status=?,helpful=?,feedback=?,"
+                "completed_at=?,updated_at=? WHERE id=?",
+                (
+                    status, None if helpful is None else int(helpful), feedback,
+                    timestamp if status in {"completed", "stopped"} else None,
+                    timestamp, session_id,
+                ),
+            )
+            row = db.execute(
+                "SELECT * FROM intervention_session WHERE id=?", (session_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["helpful"] = None if result["helpful"] is None else bool(result["helpful"])
+        return result
+
+    @staticmethod
+    def _decode_profile_fact(record: dict[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        result["value"] = json.loads(result.pop("value_json", "{}"))
+        return result
+
+    @staticmethod
+    def _decode_proactive_event(record: dict[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        result["context"] = json.loads(result.pop("context_json", "{}"))
+        result["response"] = json.loads(result.pop("response_json", "{}"))
+        return result
+
     def create_assistant_conversation(self, title: str) -> dict[str, Any]:
         timestamp = now_iso()
         record = {
@@ -855,6 +1157,21 @@ class ProductStore:
                 (status, now_iso(), action_id),
             )
         return self.get_assistant_action(action_id)
+
+    def dismiss_other_assistant_actions(
+        self,
+        message_id: str,
+        chosen_action_id: str,
+        kinds: tuple[str, ...] = ("device_control_allow", "device_control_deny"),
+    ) -> None:
+        placeholders = ",".join("?" for _ in kinds)
+        with self._connect() as db:
+            db.execute(
+                "UPDATE assistant_action SET status='dismissed',updated_at=? "
+                "WHERE message_id=? AND id<>? AND status='pending' "
+                f"AND kind IN ({placeholders})",
+                (now_iso(), message_id, chosen_action_id, *kinds),
+            )
 
     @staticmethod
     def _decode_assistant_message(record: dict[str, Any]) -> dict[str, Any]:

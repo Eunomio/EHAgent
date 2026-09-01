@@ -37,6 +37,12 @@ class SettingUpdate(BaseModel):
     contact_name: str | None = Field(default=None, max_length=40)
     contact_phone: str | None = Field(default=None, max_length=30)
     evidence_retention_days: int | None = Field(default=None, ge=1, le=30)
+    proactive_care_paused: bool | None = None
+    psychological_care_enabled: bool | None = None
+    quiet_start: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    quiet_end: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    daily_proactive_limit: int | None = Field(default=None, ge=1, le=5)
+    assistant_device_control_consent: Literal["unset", "allowed", "denied"] | None = None
 
 
 class FeedbackCreate(BaseModel):
@@ -52,6 +58,14 @@ def settings_payload(store: StoreDep) -> dict[str, Any]:
         "contact_name": raw.get("contact_name", "家人"),
         "contact_phone": raw.get("contact_phone", ""),
         "evidence_retention_days": int(raw.get("evidence_retention_days", "7")),
+        "proactive_care_paused": raw.get("proactive_care_paused") == "true",
+        "psychological_care_enabled": raw.get("psychological_care_enabled", "true") == "true",
+        "quiet_start": raw.get("quiet_start", "21:30"),
+        "quiet_end": raw.get("quiet_end", "08:00"),
+        "daily_proactive_limit": int(raw.get("daily_proactive_limit", "2")),
+        "assistant_device_control_consent": raw.get(
+            "assistant_device_control_consent", "unset"
+        ),
     }
 
 
@@ -134,6 +148,11 @@ def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
             "pending": sum(item["status"] != "completed" for item in store.help_requests()),
             "contact_name": preferences["contact_name"],
             "contact_phone": preferences["contact_phone"],
+        },
+        "care": {
+            "active": store.latest_proactive_event(),
+            "paused": preferences["proactive_care_paused"],
+            "confirmed_profile_count": len(store.profile_facts(("confirmed",))),
         },
     }
 

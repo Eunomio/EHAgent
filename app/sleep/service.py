@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.care.rules import create_sleep_change_event
 from app.core.config import Settings
 from app.llm.service import LlmService
 from app.sleep.models import SleepReportIn
@@ -49,7 +50,8 @@ class SleepService:
         analysis = self.store.add_llm_output(
             "sleep", record["id"], copy.model_dump(), source, self.llm.model_name
         )
-        return {**record, "analysis": analysis}
+        event = create_sleep_change_event(self.store, record)
+        return {**record, "analysis": analysis, "proactive_event": event}
 
     def status(self) -> dict[str, Any]:
         latest = self.store.latest_sleep()

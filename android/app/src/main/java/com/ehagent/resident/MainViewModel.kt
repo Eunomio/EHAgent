@@ -32,6 +32,11 @@ data class UiState(
     val notice: String? = null,
     val cameraPaused: Boolean = false,
     val sleepPaused: Boolean = false,
+    val proactiveCarePaused: Boolean = false,
+    val psychologicalCareEnabled: Boolean = true,
+    val assistantDeviceControlConsent: String = "unset",
+    val evidenceRetentionDays: Int = 7,
+    val profileFacts: List<ProfileFact> = emptyList(),
     val cameraStreamLoading: Boolean = false,
     val cameraSession: CameraSdkSession? = null,
     val cameraStreamError: String? = null,
@@ -108,6 +113,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var dashboard = api.dashboard()
             var devices = api.devices()
             val settings = api.settings()
+            val profileFacts = runCatching { api.profileFacts() }.getOrDefault(emptyList())
             if (shouldAutoLoadSleepDemo(dashboard.sleep.duration, sleepDemoSeedAttempted)) {
                 sleepDemoSeedAttempted = true
                 runCatching { api.loadSleepDemo() }.onSuccess {
@@ -137,6 +143,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 devices = devices,
                 cameraPaused = settings.optBoolean("camera_paused"),
                 sleepPaused = settings.optBoolean("sleep_alerts_paused"),
+                proactiveCarePaused = settings.optBoolean("proactive_care_paused"),
+                psychologicalCareEnabled = settings.optBoolean("psychological_care_enabled", true),
+                assistantDeviceControlConsent = settings.optString(
+                    "assistant_device_control_consent", "unset",
+                ),
+                evidenceRetentionDays = settings.optInt("evidence_retention_days", 7),
+                profileFacts = profileFacts,
                 safetyBaseline = safetyBaseline,
                 baselineError = if (safetyBaseline.ready) null else _state.value.baselineError,
                 safetyAnalysis = latestSafetyAnalysis,
@@ -533,6 +546,98 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { ProductApi(backendUrl).updatePause(sleep = paused) }.onSuccess { _state.value = _state.value.copy(sleepPaused = paused) }
     }
 
+    fun setProactiveCarePaused(paused: Boolean) = viewModelScope.launch {
+        runCatching { ProductApi(backendUrl).updatePause(proactive = paused) }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    proactiveCarePaused = paused,
+                    notice = if (paused) "主动关怀已暂停" else "主动关怀已恢复",
+                )
+                refresh()
+            }
+            .onFailure { _state.value = _state.value.copy(error = it.message) }
+    }
+
+    fun setDeviceControlConsent(consent: String) = viewModelScope.launch {
+        runCatching { ProductApi(backendUrl).updatePrivacy(deviceControlConsent = consent) }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    assistantDeviceControlConsent = consent,
+                    notice = if (consent == "allowed") "小安已获得设备控制权限" else "小安不会控制设备",
+                    error = null,
+                )
+            }
+            .onFailure { _state.value = _state.value.copy(error = it.message) }
+    }
+
+    fun setPsychologicalCareEnabled(enabled: Boolean) = viewModelScope.launch {
+        runCatching { ProductApi(backendUrl).updatePrivacy(psychologicalCare = enabled) }
+            .onSuccess { _state.value = _state.value.copy(psychologicalCareEnabled = enabled) }
+            .onFailure { _state.value = _state.value.copy(error = it.message) }
+    }
+
+    fun setEvidenceRetentionDays(days: Int) = viewModelScope.launch {
+        runCatching { ProductApi(backendUrl).updatePrivacy(retentionDays = days) }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    evidenceRetentionDays = days,
+                    notice = "风险证据保存时间已改为${days}天",
+                    error = null,
+                )
+            }
+            .onFailure { _state.value = _state.value.copy(error = it.message) }
+    }
+
+    fun startProactiveEvent(eventId: String) = viewModelScope.launch {
+        if (_state.value.assistantLoading) return@launch
+        _state.value = _state.value.copy(assistantLoading = true, assistantError = null)
+        runCatching { ProductApi(backendUrl).startProactiveEvent(eventId) }
+            .onSuccess { result ->
+                assistantConversationId = result.conversationId
+                _state.value = _state.value.copy(
+                    assistantMessages = listOf(result.assistantMessage),
+                    assistantLoading = false,
+                )
+                refreshSafetyStatus()
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    assistantLoading = false,
+                    assistantError = "这条关怀暂时无法打开，请稍后再试。",
+                )
+            }
+    }
+
+    fun deleteProfileFact(factId: String) = viewModelScope.launch {
+        runCatching { ProductApi(backendUrl).deleteProfileFact(factId) }
+            .onSuccess {
+                _state.value = _state.value.copy(
+                    profileFacts = _state.value.profileFacts.filterNot { it.id == factId },
+                    notice = "这条个人情况已删除",
+                )
+            }
+            .onFailure { _state.value = _state.value.copy(error = it.message) }
+    }
+
+    fun startProfileOnboarding() = viewModelScope.launch {
+        if (_state.value.assistantLoading) return@launch
+        _state.value = _state.value.copy(assistantLoading = true, assistantError = null)
+        runCatching { ProductApi(backendUrl).startProfileOnboarding() }
+            .onSuccess { result ->
+                assistantConversationId = result.conversationId
+                _state.value = _state.value.copy(
+                    assistantMessages = listOf(result.assistantMessage),
+                    assistantLoading = false,
+                )
+            }
+            .onFailure {
+                _state.value = _state.value.copy(
+                    assistantLoading = false,
+                    assistantError = "画像引导暂时无法打开，请稍后再试。",
+                )
+            }
+    }
+
     fun syncSleep() = viewModelScope.launch {
         if (_state.value.sleepActionLoading) return@launch
         _state.value = _state.value.copy(sleepActionLoading = true, error = null)
@@ -688,6 +793,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     listOf(result.userMessage, result.assistantMessage),
                 assistantLoading = false,
             )
+            refreshSafetyStatus()
+            refreshPrivacyAndDeviceSettings()
         }.onFailure {
             _state.value = _state.value.copy(
                 assistantMessages = _state.value.assistantMessages.filterNot {
@@ -702,20 +809,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun confirmAssistantAction(actionId: String) = viewModelScope.launch {
         runCatching { ProductApi(backendUrl).confirmAssistantAction(actionId) }
             .onSuccess { updated ->
+                val notice = when (updated.kind) {
+                    "contact_family" -> "已请家人联系您"
+                    "remember_profile_fact" -> "小安已经按您的同意记下"
+                    "reject_profile_fact" -> "好的，小安不会记下这件事"
+                    "start_intervention" -> "支持内容已经开始"
+                    "defer_event" -> "将在30分钟后再提醒"
+                    "pause_proactive_care" -> "主动关怀已暂停"
+                    "device_control_allow" -> "已允许小安控制已连接设备"
+                    "device_control_deny" -> "小安不会控制设备"
+                    "profile_onboarding_choice" -> "已加入我的画像"
+                    "profile_onboarding_skip" -> "已跳过这一项"
+                    else -> "已记录"
+                }
                 _state.value = _state.value.copy(
                     assistantMessages = _state.value.assistantMessages.map { message ->
-                        message.copy(actions = message.actions.map { action ->
-                            if (action.id == updated.id) updated else action
+                        message.copy(actions = message.actions.mapNotNull { action ->
+                            when {
+                                action.id == updated.id -> updated
+                                updated.kind in setOf("device_control_allow", "device_control_deny") &&
+                                    action.kind in setOf("device_control_allow", "device_control_deny") -> null
+                                updated.kind in setOf("profile_onboarding_choice", "profile_onboarding_skip") &&
+                                    action.kind in setOf("profile_onboarding_choice", "profile_onboarding_skip") -> null
+                                else -> action
+                            }
                         })
-                    },
-                    notice = "已请家人联系您",
+                    } + listOfNotNull(updated.followUpMessage),
+                    notice = notice,
                     assistantError = null,
+                    assistantDeviceControlConsent = when (updated.kind) {
+                        "device_control_allow" -> "allowed"
+                        "device_control_deny" -> "denied"
+                        else -> _state.value.assistantDeviceControlConsent
+                    },
                 )
+                if (updated.kind in setOf("remember_profile_fact", "reject_profile_fact")) {
+                    viewModelScope.launch {
+                        runCatching { ProductApi(backendUrl).profileFacts() }.onSuccess { facts ->
+                            _state.value = _state.value.copy(profileFacts = facts)
+                        }
+                    }
+                }
+                if (updated.kind == "profile_onboarding_choice") {
+                    runCatching { ProductApi(backendUrl).profileFacts() }.onSuccess { facts ->
+                        _state.value = _state.value.copy(profileFacts = facts)
+                    }
+                }
+                if (updated.kind in setOf("device_control_allow", "device_control_deny")) {
+                    refreshPrivacyAndDeviceSettings()
+                }
             }
             .onFailure {
                 _state.value = _state.value.copy(
                     assistantError = "暂时没有发出请求，请稍后再试。"
                 )
             }
+    }
+
+    private suspend fun refreshPrivacyAndDeviceSettings() {
+        runCatching { ProductApi(backendUrl).settings() }.onSuccess { settings ->
+            _state.value = _state.value.copy(
+                cameraPaused = settings.optBoolean("camera_paused"),
+                sleepPaused = settings.optBoolean("sleep_alerts_paused"),
+                proactiveCarePaused = settings.optBoolean("proactive_care_paused"),
+                psychologicalCareEnabled = settings.optBoolean("psychological_care_enabled", true),
+                assistantDeviceControlConsent = settings.optString(
+                    "assistant_device_control_consent", "unset",
+                ),
+                evidenceRetentionDays = settings.optInt("evidence_retention_days", 7),
+            )
+        }
     }
 }

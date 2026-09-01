@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.api.router import api_router
+from app.assistant.device_tools import DeviceToolGateway
 from app.assistant.service import AssistantService
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
@@ -33,10 +34,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store.initialize()
     ezviz = EzvizClient(resolved)
     llm = LlmService(resolved)
-    assistant = AssistantService(store, llm, resolved)
     sleep = SleepService(store, llm, resolved)
     sleep_sync = SleepSyncService(resolved, ezviz, store, llm)
     vision_safety = VisionSafetyService(resolved)
+    device_tools = DeviceToolGateway(
+        store, resolved, ezviz, vision_safety, sleep_sync
+    )
+    assistant = AssistantService(store, llm, resolved, device_tools)
     vision_monitor = VisionChangeMonitor(resolved, ezviz, vision_safety, store)
 
     @asynccontextmanager

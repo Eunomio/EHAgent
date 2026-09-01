@@ -26,9 +26,22 @@ def conversation(conversation_id: str, assistant: AssistantDep) -> dict[str, Any
     return result
 
 
+@router.post("/events/{event_id}/start")
+def start_event(event_id: str, assistant: AssistantDep) -> dict[str, Any]:
+    result = assistant.start_event(event_id)
+    if result is None:
+        raise HTTPException(404, "没有找到这条主动关怀")
+    return result
+
+
+@router.post("/profile-onboarding/start")
+def start_profile_onboarding(assistant: AssistantDep) -> dict[str, Any]:
+    return assistant.start_profile_onboarding()
+
+
 @router.post("/actions/{action_id}/confirm")
-def confirm_action(action_id: str, assistant: AssistantDep) -> dict[str, Any]:
-    result = assistant.confirm_action(action_id)
+async def confirm_action(action_id: str, assistant: AssistantDep) -> dict[str, Any]:
+    result = await assistant.confirm_action(action_id)
     if result is None:
         raise HTTPException(404, "没有找到这个操作")
     return result

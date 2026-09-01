@@ -12,8 +12,8 @@ android {
         applicationId = "com.ehagent.resident"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.10.3"
+        versionCode = 21
+        versionName = "0.15.0"
     }
 
     buildTypes {
