@@ -355,7 +355,7 @@ private fun HomeAssistantPanel(state: UiState, vm: MainViewModel, onAssistant: (
                             .align(if (message.role == "user") Alignment.End else Alignment.Start),
                     ) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                            Text(message.content, fontSize = 17.sp, lineHeight = 25.sp)
+                            Text(elderFacingPlainText(message.content), fontSize = 17.sp, lineHeight = 25.sp)
                             if (message.role != "user") {
                                 message.actions.filter { it.status == "pending" }.forEach { action ->
                                     Button(
@@ -377,6 +377,12 @@ private fun HomeAssistantPanel(state: UiState, vm: MainViewModel, onAssistant: (
                 }
             }
             state.assistantError?.let { Text(it, color = Color(0xFFFFD7D0), fontSize = 14.sp) }
+            if (
+                state.whiteNoisePlaying || state.whiteNoisePaused || state.whiteNoiseLoading ||
+                    state.whiteNoiseError != null
+            ) {
+                WhiteNoisePlayerCard(state, vm)
+            }
             Row(verticalAlignment = Alignment.Bottom) {
                 FilledIconButton(
                     onClick = {
@@ -462,7 +468,9 @@ private fun ProactiveCareCard(event: ProactiveEvent, onClick: () -> Unit) {
                 Icon(Icons.Rounded.ChevronRight, "回应小安")
             }
             Text(event.message, fontSize = 17.sp, lineHeight = 25.sp, maxLines = 3)
-            Text("为什么询问：${event.reason}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+            if (!BuildConfig.DEMO_MODE) {
+                Text("为什么询问：${event.reason}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+            }
         }
     }
 }
@@ -514,11 +522,18 @@ private fun ContactCard(name: String, onClick: () -> Unit) {
 @Composable
 private fun SafetyPage(state: UiState, vm: MainViewModel) {
     val context = LocalContext.current
+    var useRecordedWalkway by remember { mutableStateOf(BuildConfig.DEMO_MODE) }
     DisposableEffect(Unit) {
         onDispose { vm.stopCameraStream() }
     }
     PageBody {
         PageTitle("居家安全", "留意每天常走的地方", Icons.Rounded.HealthAndSafety)
+        if (BuildConfig.DEMO_MODE) {
+            SafetyPictureSourceSwitch(useRecordedWalkway) { useRecordedWalkway = it }
+        }
+        if (BuildConfig.DEMO_MODE && useRecordedWalkway) {
+            EmbeddedSafetyFlow(vm)
+        } else {
         CameraStreamCard(state, vm)
         SafetyCheckCard(state, vm)
         if (state.dashboard.safety.taskId == null) {
@@ -564,6 +579,7 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
                 }
             }
         }
+        }
         BaselineCard(
             baseline = state.safetyBaseline,
             needsRefresh = state.safetyBaselineNeedsRefresh,
@@ -573,6 +589,28 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
             onRetry = { vm.saveSafetyBaseline() },
         )
         SettingsSwitch("暂停通道检查", "需要隐私时可以随时暂停", state.cameraPaused, vm::setCameraPaused)
+    }
+}
+
+@Composable
+private fun SafetyPictureSourceSwitch(recorded: Boolean, onChange: (Boolean) -> Unit) {
+    Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = recorded,
+                onClick = { onChange(true) },
+                label = { Text("走廊画面", fontSize = 16.sp) },
+                leadingIcon = { Icon(Icons.Rounded.VideoLibrary, null) },
+                modifier = Modifier.weight(1f),
+            )
+            FilterChip(
+                selected = !recorded,
+                onClick = { onChange(false) },
+                label = { Text("实时画面", fontSize = 16.sp) },
+                leadingIcon = { Icon(Icons.Rounded.Videocam, null) },
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
@@ -1069,6 +1107,7 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                     }
                 }
             }
+            RecentSleepTrendCard(state.sleepHistory)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 VitalCard(Modifier.weight(1f), Icons.Rounded.Air, "平均呼吸", sleep.respiratoryRate?.let { formatOne(it) } ?: "—", "次/分")
                 VitalCard(Modifier.weight(1f), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
@@ -1384,12 +1423,13 @@ private fun MePage(state: UiState, vm: MainViewModel, onStartOnboarding: () -> U
         Text("我的设备", fontSize = 21.sp, fontWeight = FontWeight.Bold)
         DeviceRow(Icons.Rounded.Videocam, "萤石 C6c", deviceText(state.devices.cameraConfigured, state.devices.cameraOnline))
         DeviceRow(Icons.Rounded.Bed, "无感睡眠助手", if (state.devices.sleepConfigured) "已连接" else "等待连接")
+        if (BuildConfig.DEMO_MODE) {
         Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("睡眠演示数据", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Text("近期睡眠记录", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (state.devices.sleepDemoActive) "当前睡眠报告使用本地演示数据"
-                    else "当前未使用演示睡眠数据",
+                    if (state.devices.sleepDemoActive) "最近7晚记录已加载"
+                    else "还没有加载近期记录",
                     color = Muted,
                 )
                 OutlinedButton(
@@ -1401,7 +1441,7 @@ private fun MePage(state: UiState, vm: MainViewModel, onStartOnboarding: () -> U
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(14.dp),
                 ) {
-                    Text(if (state.devices.sleepDemoActive) "一键清除演示数据" else "导入8晚演示数据")
+                    Text(if (state.devices.sleepDemoActive) "清除近期记录" else "加载最近7晚")
                 }
                 if (state.devices.sleepDemoActive) {
                     OutlinedButton(
@@ -1418,14 +1458,15 @@ private fun MePage(state: UiState, vm: MainViewModel, onStartOnboarding: () -> U
                     ) {
                         Text(
                             if (state.dashboard.sleep.nightAwakening.state == "waiting") {
-                                "演示一次起夜关注"
+                                "开启一次起夜关注"
                             } else {
-                                "重置起夜关注演示"
+                                "重置起夜关注"
                             },
                         )
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1443,8 +1484,7 @@ private fun PrivacyPage(state: UiState, vm: MainViewModel) {
                     RoundIcon(Icons.Rounded.AutoAwesome, Brand, Color.White)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("小安是大脑，设备是四肢", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                        Text("小安统一理解您的话，再调用获得授权的设备完成操作。", color = Muted, lineHeight = 23.sp)
+                        Text("我是小安，我是您的居家小助手", fontSize = 21.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 Text("目前可控制：通道检查、睡眠提醒和主动关怀。新增设备接入后也会在这里说明。", fontSize = 15.sp, lineHeight = 23.sp)
@@ -1454,7 +1494,7 @@ private fun PrivacyPage(state: UiState, vm: MainViewModel) {
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
                 Text("设备控制权限", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                Text("只需选择一次。小安执行您明确说出的设备指令；您可以随时修改或撤回。", color = Muted, lineHeight = 23.sp)
+                Text("只需选择一次，让小安控制您家里的设备；您可以随时修改或撤回。", color = Muted, lineHeight = 23.sp)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ChoiceButton(
                         "允许控制",
@@ -1496,7 +1536,7 @@ private fun PrivacyPage(state: UiState, vm: MainViewModel) {
             !state.sleepPaused,
         ) { vm.setSleepPaused(!it) }
 
-        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        /*Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("风险证据保存时间", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Text("用于解释为什么产生安全提醒，到期后按服务清理规则删除。", color = Muted)
@@ -1510,7 +1550,7 @@ private fun PrivacyPage(state: UiState, vm: MainViewModel) {
                     }
                 }
             }
-        }
+        }*/
     }
 }
 

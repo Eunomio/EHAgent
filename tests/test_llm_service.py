@@ -93,6 +93,39 @@ def test_assistant_enables_web_search_and_returns_sources() -> None:
     asyncio.run(scenario())
 
 
+def test_assistant_formats_markdown_and_requests_self_help_first() -> None:
+    async def scenario() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = request.read().decode("utf-8")
+            assert "低负担" in body
+            assert "第一轮不要直接要求尽快就医" in body
+            assert "起夜后难以再次入睡" in body
+            return httpx.Response(200, json={
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "## 可以先这样做\n\n1. **听一会儿白噪音**",
+                    }],
+                }]
+            })
+
+        settings = Settings(
+            llm_enabled=True, llm_api_key="test-key", llm_model="test-model",
+            llm_api_base="https://example.test/v1",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            service = LlmService(settings, client)
+            reply, _, source = await service.chat_assistant(
+                "我起夜以后很难再次入睡", {}, []
+            )
+        assert source == "llm"
+        assert reply == "可以先这样做\n听一会儿白噪音"
+        assert "**" not in reply
+
+    asyncio.run(scenario())
+
+
 def test_llm_semantically_selects_camera_tool_without_device_keyword() -> None:
     async def scenario() -> None:
         def handler(request: httpx.Request) -> httpx.Response:

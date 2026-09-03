@@ -83,6 +83,29 @@ HAZARD_LABELS = {
 def reconcile_walkway_geometry(prediction: VisionPrediction) -> VisionPrediction:
     """Correct contradictory semantic fields using the model's own risk boxes."""
 
+    positive_trip_phrases = (
+        "存在绊倒风险",
+        "有绊倒风险",
+        "可能绊倒",
+        "容易绊倒",
+        "会绊倒",
+        "可能踩到",
+        "可能踢到",
+    )
+    negative_trip_phrases = (
+        "没有绊倒风险",
+        "无绊倒风险",
+        "不存在绊倒风险",
+        "不易绊倒",
+    )
+    if (
+        prediction.hazard_present is True
+        and prediction.trip_risk == "none"
+        and any(phrase in prediction.reason for phrase in positive_trip_phrases)
+        and not any(phrase in prediction.reason for phrase in negative_trip_phrases)
+    ):
+        prediction = prediction.model_copy(update={"trip_risk": "possible"})
+
     walkway_x1 = prediction.walkway_near_x1
     walkway_x2 = prediction.walkway_near_x2
     if (
@@ -193,15 +216,11 @@ def derive_assessment(prediction: VisionPrediction) -> dict[str, str]:
             prediction.walkway_occupation == "quarter_to_half"
             and prediction.position_zone == "center"
         )
-        or (
-            prediction.trip_risk == "possible"
-            and prediction.position_zone == "center"
-        )
+        or prediction.trip_risk == "possible"
     ):
         risk = "medium"
     elif (
         prediction.passage_effect == "narrowed"
-        or prediction.trip_risk == "possible"
         or prediction.visibility == "limited"
     ):
         risk = "low"
@@ -478,6 +497,11 @@ class VisionSafetyService:
             "判断目标是人能否沿原有走道正常、安全通行，不要求画面中完全没有物品。"
             "通行宽度和跌倒风险是两个独立结论：即使旁边仍有空间通过，只要脚可能碰到物品、"
             "需要绕脚或跨越、物品伸入门槛或实际落脚区域，trip_risk也必须是possible或obvious。"
+            "玩具车、积木、球、拖鞋等低矮小物品散落在地面时，要重点判断脚是否可能踩到或踢到；"
+            "只要它们位于常用行走路线、门口、门槛或落脚区域，就属于绊倒风险，至少返回possible，"
+            "不能因为剩余通行宽度足够、物品较小或靠近一侧而返回none。"
+            "只要trip_risk为possible或obvious，本次画面就需要提醒整理，不能得出无需整理的结论。"
+            "reason与trip_risk必须一致；reason中写明存在、有、可能或容易绊倒时，trip_risk禁止为none。"
             "同时不要仅因为物品靠近通道边界就推断跌倒风险。家庭通道边缘存在固定置物很常见；"
             "若物品没有伸入常用落脚路线、不需要改变脚步、可以自然直行通过，trip_risk应为none。"
             "物品出现在画面中不等于需要整理；放在走道外或紧靠边缘，并且不缩窄有效通行宽度、"
@@ -519,6 +543,12 @@ class VisionSafetyService:
             '"position_zone":"inner_side","walkway_occupation":"under_quarter",'
             '"walkway_length_occupation":"under_quarter","passage_effect":"none",'
             '"trip_risk":"none","reason":"纸箱位于走道边缘，剩余宽度足够直行通过。",'
+            '"hazard_regions":[],"walkway_near_x1":400,"walkway_near_x2":850}'
+            "地面散落玩具车的输出示例："
+            '{"visibility":"usable","hazard_present":true,"hazard_types":["other_obstacle"],'
+            '"position_zone":"inner_side","walkway_occupation":"under_quarter",'
+            '"walkway_length_occupation":"under_quarter","passage_effect":"none",'
+            '"trip_risk":"possible","reason":"玩具车散落在地面落脚区域，经过时可能踩到或绊倒。",'
             '"hazard_regions":[],"walkway_near_x1":400,"walkway_near_x2":850}'
         )
         if baseline_validation:

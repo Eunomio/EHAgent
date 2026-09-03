@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -5,6 +7,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from app.dependencies import (
     EzvizDep,
@@ -21,6 +24,10 @@ from app.vision.service import BaselineMissingError, UnsafeBaselineError, Vision
 from app.vision.workflow import record_safety_result
 
 router = APIRouter(prefix="/devices", tags=["devices"])
+
+
+class SafetyFrameIn(BaseModel):
+    image_base64: str = Field(min_length=16, max_length=16 * 1024 * 1024)
 
 
 @router.get("")
@@ -47,6 +54,11 @@ async def device_status(
             "demo_active": bool(
                 latest_sleep and latest_sleep.get("source") == "demo_generated"
             ),
+            "demo_dataset_id": (
+                latest_sleep.get("demo_dataset_id")
+                if latest_sleep and latest_sleep.get("source") == "demo_generated"
+                else None
+            ),
             "sync": store.latest_sleep_sync(),
         },
     }
@@ -64,11 +76,22 @@ async def load_sleep_demo(
     store.add_llm_output(
         "sleep", latest["id"], copy.model_dump(), source, llm.model_name
     )
+    event = store.create_proactive_event(
+        event_type="sleep_change",
+        title="小安想了解一下您昨晚的休息",
+        message="我发现您昨天半夜醒了以后，过了好久才睡着，是发生什么事了吗？",
+        reason="睡眠助手发现第4、5晚起夜后约1小时才再次入睡",
+        source="demo_generated",
+        source_ref=str(records[4]["id"]),
+        priority="high",
+        context={"script_id": "sleep_return_delay_v1", "dataset_id": DEMO_DATASET_ID},
+    )
     return {
         "success": True,
         "dataset_id": DEMO_DATASET_ID,
         "imported": len(records),
         "latest": latest,
+        "proactive_event": event,
     }
 
 
@@ -96,7 +119,7 @@ def activate_demo_night_awakening(
         or latest.get("source") != "demo_generated"
         or latest.get("demo_dataset_id") != DEMO_DATASET_ID
     ):
-        raise HTTPException(409, "请先导入8晚演示睡眠数据")
+        raise HTTPException(409, "请先导入7晚睡眠数据")
     assessment = assess_night_awakening(
         history,
         detected_at=datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -296,6 +319,31 @@ async def analyze_c6c_safety(
         raise HTTPException(409, str(exc)) from exc
     except EzvizError as exc:
         raise HTTPException(422, str(exc)) from exc
+    except VisionSafetyError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    return record_safety_result(store, settings, result)
+
+
+@router.post("/c6c/safety/analyze-frame")
+async def analyze_c6c_safety_frame(
+    payload: SafetyFrameIn,
+    store: StoreDep,
+    settings: SettingsDep,
+    vision: VisionSafetyDep,
+) -> dict[str, Any]:
+    if store.settings().get("camera_paused") == "true":
+        raise HTTPException(409, "摄像头已暂停，请先恢复检查")
+    try:
+        image = base64.b64decode(payload.image_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(422, "当前画面数据无效") from exc
+    if len(image) > 12 * 1024 * 1024:
+        raise HTTPException(413, "单张图片不能超过12MB")
+    try:
+        result = await vision.analyze_image(image, "image/jpeg")
+    except BaselineMissingError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except VisionSafetyError as exc:
         raise HTTPException(502, str(exc)) from exc
 

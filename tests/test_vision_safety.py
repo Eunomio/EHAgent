@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from io import BytesIO
 from pathlib import Path
@@ -75,7 +76,7 @@ def test_box_at_walkway_edge_is_clear_when_people_can_walk_straight() -> None:
     assert assessment["action_text"] == "当前无需整理"
 
 
-def test_uncertain_trip_risk_at_edge_does_not_require_cleanup() -> None:
+def test_possible_trip_risk_always_requires_cleanup() -> None:
     prediction = VisionPrediction(
         visibility="usable",
         hazard_present=True,
@@ -85,11 +86,31 @@ def test_uncertain_trip_risk_at_edge_does_not_require_cleanup() -> None:
         walkway_length_occupation="under_quarter",
         passage_effect="none",
         trip_risk="possible",
-        reason="纸箱靠近走道边缘，没有观察到需要绕脚或跨越。",
+        reason="地面物品靠近日常落脚区域，可能绊倒。",
     )
     assessment = derive_assessment(prediction)
-    assert assessment["risk_level"] == "low"
-    assert assessment["headline"] == "通道可以通行"
+    assert assessment["risk_level"] == "medium"
+    assert assessment["headline"] == "通道需要整理"
+
+
+def test_trip_risk_in_reason_cannot_produce_clear_result() -> None:
+    prediction = VisionPrediction(
+        visibility="usable",
+        hazard_present=True,
+        hazard_types=["other_obstacle"],
+        position_zone="inner_side",
+        walkway_occupation="under_quarter",
+        walkway_length_occupation="under_quarter",
+        passage_effect="none",
+        trip_risk="none",
+        reason="玩具车散落在地面落脚区域，有绊倒风险。",
+    )
+
+    assessment = derive_assessment(prediction)
+
+    assert assessment["risk_level"] == "medium"
+    assert assessment["headline"] == "通道需要整理"
+    assert "物品移到通道外" in assessment["action_text"]
 
 
 def test_baseline_and_analysis_use_two_images(tmp_path: Path) -> None:
@@ -178,6 +199,37 @@ def test_safety_endpoints_save_baseline_and_create_task(client) -> None:
     assert analysis.json()["task_id"]
     task = client.get("/api/v1/resident/safety").json()["task"]
     assert task["title"] == "通道需要整理"
+
+
+def test_safety_frame_uses_existing_vision_analysis(client) -> None:
+    received: dict[str, object] = {}
+
+    async def fake_analyze_image(image: bytes, content_type: str) -> dict[str, object]:
+        received.update({"image": image, "content_type": content_type})
+        return {
+            "checked_at": "2026-08-21T18:02:00+08:00",
+            "prediction": {},
+            "assessment": {
+                "risk_level": "medium",
+                "headline": "通道需要整理",
+                "action_text": "请将影响通行的物品移到通道外",
+            },
+            "reason": "画面中的物品伸入了日常行走区域。",
+            "hazard_regions": [],
+            "evidence_path": "frame.jpg",
+        }
+
+    client.app.state.vision_safety.analyze_image = fake_analyze_image
+    image = b"jpeg-frame" * 20
+    response = client.post(
+        "/api/v1/devices/c6c/safety/analyze-frame",
+        json={"image_base64": base64.b64encode(image).decode("ascii")},
+    )
+
+    assert response.status_code == 200
+    assert received == {"image": image, "content_type": "image/jpeg"}
+    assert response.json()["reason"] == "画面中的物品伸入了日常行走区域。"
+    assert response.json()["task_id"]
 
 
 def test_analysis_retries_when_platform_omits_required_fields(tmp_path: Path) -> None:

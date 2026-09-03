@@ -117,6 +117,13 @@ internal fun AssistantPage(state: UiState, vm: MainViewModel, onBack: () -> Unit
             }
         }
 
+        if (
+            state.whiteNoisePlaying || state.whiteNoisePaused || state.whiteNoiseLoading ||
+                state.whiteNoiseError != null
+        ) {
+            WhiteNoisePlayerCard(state, vm)
+        }
+
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -132,7 +139,7 @@ internal fun AssistantPage(state: UiState, vm: MainViewModel, onBack: () -> Unit
                     onSpeak = {
                         if (speechReady) {
                             speaker.speak(
-                                message.content,
+                                elderFacingPlainText(message.content),
                                 TextToSpeech.QUEUE_FLUSH,
                                 null,
                                 message.id,
@@ -245,8 +252,8 @@ private fun AssistantBubble(
             modifier = Modifier.fillMaxWidth(if (fromResident) .86f else .94f),
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(message.content, fontSize = 18.sp, lineHeight = 28.sp)
-                if (!fromResident && message.contextUsed.isNotEmpty()) {
+                Text(elderFacingPlainText(message.content), fontSize = 18.sp, lineHeight = 28.sp)
+                if (!BuildConfig.DEMO_MODE && !fromResident && message.contextUsed.isNotEmpty()) {
                     Text(
                         "参考了：${message.contextUsed.joinToString("、")}",
                         color = Muted,
@@ -278,6 +285,16 @@ private fun AssistantBubble(
         }
     }
 }
+
+internal fun elderFacingPlainText(content: String): String = content
+    .replace("\r\n", "\n")
+    .replace(Regex("(?m)^\\s*#{1,6}\\s*"), "")
+    .replace(Regex("(?m)^\\s*(?:[-*+]\\s+|\\d+[.)、]\\s*)"), "")
+    .replace("**", "")
+    .replace("__", "")
+    .replace("`", "")
+    .replace(Regex("\\n{3,}"), "\n\n")
+    .trim()
 
 @Composable
 private fun SourceLink(source: AssistantSource) {

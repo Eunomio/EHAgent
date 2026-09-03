@@ -54,6 +54,33 @@ def test_missing_assistant_conversation_returns_404(client) -> None:
     assert response.status_code == 404
 
 
+def test_sleep_demo_uses_existing_proactive_conversation(client) -> None:
+    loaded = client.post("/api/v1/devices/sleep/demo")
+    assert loaded.status_code == 200
+    event = client.get("/api/v1/resident/dashboard").json()["care"]["active"]
+    assert "昨天半夜醒了" in event["message"]
+
+    started = client.post(f"/api/v1/assistant/events/{event['id']}/start").json()
+    conversation_id = started["conversation_id"]
+    first = client.post(
+        "/api/v1/assistant/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "哎呀，我昨晚起来以后再躺下就睡不着了，白天也没有精神。",
+        },
+    ).json()
+    assert "身体不舒服" in first["assistant_message"]["content"]
+
+    second = client.post(
+        "/api/v1/assistant/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "身体没有不舒服，就是脑子清醒了，后来一直睡不着。",
+        },
+    ).json()
+    assert "轻柔的白噪音" in second["assistant_message"]["content"]
+
+
 def test_device_control_asks_once_then_executes_without_repeating_consent(client) -> None:
     first = client.post(
         "/api/v1/assistant/chat", json={"message": "请暂停摄像头"}
@@ -222,3 +249,28 @@ def test_low_sensitivity_preference_is_visible_ambient_memory(client) -> None:
     assert profile["inferred"][0]["display_text"] == "喜欢早上听戏"
     assert profile["inferred"][0]["status"] == "inferred"
     assert profile["visible"][0]["id"] == profile["inferred"][0]["id"]
+
+
+def test_night_awakening_offers_white_noise_and_starts_only_after_consent(client) -> None:
+    response = client.post(
+        "/api/v1/assistant/chat",
+        json={"message": "我起夜以后很难再次入睡"},
+    )
+    assert response.status_code == 200
+    message = response.json()["assistant_message"]
+    assert "白噪音" in message["content"]
+    action = next(
+        item for item in message["actions"]
+        if item["kind"] == "start_intervention"
+    )
+    assert action["payload"]["intervention_id"] == "white_noise_30min"
+    assert client.app.state.store.intervention_sessions(limit=10) == []
+
+    confirmed = client.post(
+        f"/api/v1/assistant/actions/{action['id']}/confirm"
+    ).json()
+    assert confirmed["status"] == "completed"
+    assert "正在为您选择" in confirmed["follow_up_message"]["content"]
+    assert "上一首和下一首" in confirmed["follow_up_message"]["content"]
+    sessions = client.app.state.store.intervention_sessions(limit=10)
+    assert sessions[0]["intervention_id"] == "white_noise_30min"

@@ -45,6 +45,17 @@ class AssistantService:
                 response={"resident_message_id": user_message["id"], "text": message},
                 conversation_id=conversation["id"],
             )
+        scripted_reply = self._sleep_return_delay_reply(active_event, history)
+        if scripted_reply is not None:
+            assistant_message = self.store.add_assistant_message(
+                conversation["id"], "assistant", scripted_reply, "proactive_rule",
+                context_used=["最近7晚睡眠变化"],
+            )
+            return {
+                "conversation_id": conversation["id"],
+                "user_message": user_message,
+                "assistant_message": assistant_message,
+            }
         extracted, extraction_source = await self.llm.extract_profile_facts(message)
         candidate_facts: list[dict[str, Any]] = []
         for item in extracted.facts:
@@ -134,6 +145,20 @@ class AssistantService:
             "messages": self.store.assistant_messages(conversation_id, limit=50, with_actions=True),
         }
 
+    @staticmethod
+    def _sleep_return_delay_reply(
+        event: dict[str, Any] | None, history: list[dict[str, Any]]
+    ) -> str | None:
+        if not event or event.get("context", {}).get("script_id") != "sleep_return_delay_v1":
+            return None
+        resident_turn = sum(item.get("role") == "user" for item in history)
+        replies = [
+            "听起来这次起夜影响了后面的休息。您当时是身体不舒服，还是脑子比较清醒、一直睡不着？",
+            "明白了。今晚您再睡不着，可以试试听一会儿轻柔的白噪音。您叫我，我就给您放。",
+            "好，我在。今晚需要的时候叫我就行。",
+        ]
+        return replies[resident_turn] if resident_turn < len(replies) else None
+
     def start_profile_onboarding(self) -> dict[str, Any]:
         conversation = self.store.create_assistant_conversation("完善我的情况")
         next_step = self._next_missing_profile_step()
@@ -173,6 +198,13 @@ class AssistantService:
                 self.store.start_intervention(
                     resource["id"], resource["title"], action["payload"].get("event_id")
                 )
+                if resource["id"] == "white_noise_30min":
+                    follow_up_message = self.store.add_assistant_message(
+                        action["conversation_id"],
+                        "assistant",
+                        "好的，正在为您选择一种助眠声音。开始播放后，30分钟会自动停止，您也可以暂停、调节音量或切换上一首和下一首。",
+                        "intervention_library",
+                    )
         elif action["kind"] == "defer_event":
             remind_at = (datetime.now().astimezone() + timedelta(minutes=30)).isoformat(
                 timespec="seconds"
@@ -473,7 +505,9 @@ class AssistantService:
                 "不用记", {"fact_id": fact["id"]},
             ))
         intervention_id = None
-        if any(word in message for word in ("睡不着", "不好睡", "想听白噪音")):
+        if any(word in message for word in (
+            "睡不着", "不好睡", "难入睡", "再次入睡", "再睡着", "睡不回去", "想听白噪音",
+        )):
             intervention_id = "white_noise_30min"
         elif any(word in message for word in ("紧张", "担心", "后怕", "放松")):
             intervention_id = "relaxation_5min"

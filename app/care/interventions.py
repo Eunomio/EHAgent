@@ -20,7 +20,7 @@ INTERVENTIONS: dict[str, dict[str, Any]] = {
     "white_noise_30min": {
         "id": "white_noise_30min",
         "title": "30分钟睡前白噪音",
-        "summary": "以较低音量播放，30分钟后自动停止。",
+        "summary": "从审核素材库随机选择并以较低音量播放，30分钟后自动停止，可随时切换。",
         "duration_minutes": 30,
         "kind": "audio",
         "content": ["请保持音量轻柔，不要遮住警报、门铃或家人的声音。"],

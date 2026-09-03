@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any, Literal, TypeVar
 
 import httpx
@@ -243,7 +244,7 @@ class LlmService:
     ) -> tuple[str, list[dict[str, str]], str]:
         fallback = self._assistant_fallback(message, context)
         if not self.configured:
-            return fallback, [], "template"
+            return self._format_elder_reply(fallback), [], "template"
 
         conversation = [
             {"role": item["role"], "content": item["content"]}
@@ -252,11 +253,18 @@ class LlmService:
         request_body: dict[str, Any] = {
             "model": self.settings.llm_model,
             "instructions": (
-                "你叫小安，是面向老年人的中文生活助手。回答直接、温和、具体，优先使用短句。"
+                "你叫小安，是面向老年人的中文生活助手。回答直接、温和、具体，使用短句和日常口语。"
+                "普通回答控制在180个汉字以内，最多四个短段落，每段只说一件事。"
+                "只输出纯文本，不使用Markdown、星号、井号、标题、序号、项目符号或表格。"
                 "可以回答一般生活问题，也可以使用提供的当前生活信息。只引用其中真实存在的数据，不补充缺失数值。"
                 "涉及天气、新闻、政策、交通、诈骗案例等会变化的信息时使用联网搜索。"
                 "不要展示模型、接口或内部处理过程。不要把健康数据解释成诊断。"
                 "如果用户描述胸痛、呼吸困难、失去意识或正在跌倒等紧急情况，先建议立即呼叫急救并联系身边的人。"
+                "除上述紧急情况外，老人谈到睡眠或情绪困扰时，先简短表示理解，再优先提供一项低负担、可立即尝试的自助支持，"
+                "并询问老人是否愿意。起夜后难以再次入睡时，优先询问是否播放低音量白噪音；不要声称已经播放，"
+                "产品会提供可点选的确认按钮。不要把自助支持说成治疗或保证有效。"
+                "非紧急情况下，第一轮不要直接要求尽快就医，也不要先推荐具体科室。只有症状持续多日、明显加重、"
+                "严重影响日常生活，或老人主动询问时，再温和建议咨询医生。"
                 "涉及联系家人时只说明可以协助，等待产品提供确认按钮。"
                 "涉及设备状态时不要自行声称已经执行；产品会根据已保存的一次性授权执行，"
                 "或在尚未选择权限时提供按钮。"
@@ -287,9 +295,13 @@ class LlmService:
             )
             response.raise_for_status()
             payload = response.json()
-            return self._output_text(payload), self._output_sources(payload), "llm"
+            return (
+                self._format_elder_reply(self._output_text(payload)),
+                self._output_sources(payload),
+                "llm",
+            )
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
-            return fallback, [], "template"
+            return self._format_elder_reply(fallback), [], "template"
 
     async def _generate(
         self,
@@ -368,6 +380,15 @@ class LlmService:
             return str(tool_result["summary"])
         sleep = context.get("latest_sleep")
         safety = context.get("open_safety_task")
+        trouble_sleep_phrases = (
+            "睡不着", "不好睡", "难入睡", "再次入睡", "再睡着", "睡不回去",
+        )
+        if any(word in message for word in trouble_sleep_phrases):
+            return (
+                "起夜后很难再睡着，确实会让人休息不好。"
+                "您可以先听一会儿低音量白噪音，让周围的声音更平稳。"
+                "需要我现在为您播放30分钟吗？"
+            )
         if any(word in message for word in ("睡", "心率", "呼吸")) and sleep:
             minutes = int(sleep["duration_minutes"])
             parts = [f"最近一次睡眠共{minutes // 60}小时{minutes % 60}分钟。"]
@@ -383,6 +404,18 @@ class LlmService:
         if "联系" in message and "家人" in message:
             return "可以，我会先请您确认，确认后再通知家人联系您。"
         return "我现在可以回答家中的安全和睡眠情况。其他生活问题暂时无法查询，请稍后再试。"
+
+    @staticmethod
+    def _format_elder_reply(reply: str) -> str:
+        """Remove common Markdown artifacts before an elder-facing reply is stored."""
+
+        text = reply.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)
+        text = re.sub(r"(?m)^\s*(?:[-*+]\s+|\d+[.)、]\s*)", "", text)
+        text = text.replace("**", "").replace("__", "").replace("`", "")
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
 
     @staticmethod
     def _device_tool_fallback(message: str) -> DeviceToolDecision:

@@ -6,7 +6,7 @@ from typing import Any
 
 from app.store import ProductStore
 
-DEMO_DATASET_ID = "afternoon-demo-20260824-v1"
+DEMO_DATASET_ID = "initial-review-20260902-v1"
 DEMO_FIXTURE_PATH = Path(__file__).with_name("demo_sleep_20260824.json")
 
 
