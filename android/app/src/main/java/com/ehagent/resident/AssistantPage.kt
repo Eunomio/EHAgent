@@ -1,7 +1,9 @@
 package com.ehagent.resident
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
@@ -58,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import java.util.Locale
 
 private val quickQuestions = listOf(
@@ -85,6 +88,15 @@ internal fun AssistantPage(state: UiState, vm: MainViewModel, onBack: () -> Unit
     ) { result ->
         val words = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
         words?.firstOrNull()?.let { input = it }
+    }
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            vm.toggleVoiceInput { input = it }
+        } else {
+            Toast.makeText(context, "请允许使用麦克风后再试", Toast.LENGTH_LONG).show()
+        }
     }
 
     BackHandler(onBack = onBack)
@@ -168,39 +180,42 @@ internal fun AssistantPage(state: UiState, vm: MainViewModel, onBack: () -> Unit
         }
 
         Surface(color = Color.White, shadowElevation = 5.dp) {
-            Row(
-                Modifier.fillMaxWidth().padding(12.dp),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                IconButton(onClick = {
-                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-                        putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出您想问的问题")
-                    }
-                    try {
-                        voiceLauncher.launch(intent)
-                    } catch (_: ActivityNotFoundException) {
-                        Toast.makeText(context, "这部手机暂时无法使用语音输入", Toast.LENGTH_LONG).show()
-                    }
-                }) { Icon(Icons.Rounded.Mic, "语音输入", tint = Brand, modifier = Modifier.size(29.dp)) }
-                OutlinedTextField(
+            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                ResponsiveAssistantComposer(
                     value = input,
                     onValueChange = { input = it },
-                    placeholder = { Text("和小安说点什么") },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 4,
-                    shape = RoundedCornerShape(20.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                FilledIconButton(
-                    onClick = {
+                    onVoice = {
+                        if (state.voiceRecording) {
+                            vm.toggleVoiceInput { input = it }
+                        } else {
+                            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+                                putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出您想问的问题")
+                            }
+                            if (intent.resolveActivity(context.packageManager) != null) {
+                                voiceLauncher.launch(intent)
+                            } else if (
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                                PackageManager.PERMISSION_GRANTED
+                            ) {
+                                vm.toggleVoiceInput { input = it }
+                            } else {
+                                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    },
+                    onSend = {
                         vm.sendAssistantMessage(input)
                         input = ""
                     },
-                    enabled = input.isNotBlank() && !state.assistantLoading,
-                    modifier = Modifier.size(52.dp),
-                ) { Icon(Icons.Rounded.Send, "发送") }
+                    sendEnabled = input.isNotBlank() && !state.assistantLoading,
+                    voiceRecording = state.voiceRecording,
+                    voiceTranscribing = state.voiceTranscribing,
+                )
+                state.voiceError?.let {
+                    Text(it, color = Color(0xFF7D2E25), fontSize = 14.sp, lineHeight = 20.sp)
+                }
             }
         }
     }
@@ -253,13 +268,6 @@ private fun AssistantBubble(
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(elderFacingPlainText(message.content), fontSize = 18.sp, lineHeight = 28.sp)
-                if (!BuildConfig.DEMO_MODE && !fromResident && message.contextUsed.isNotEmpty()) {
-                    Text(
-                        "参考了：${message.contextUsed.joinToString("、")}",
-                        color = Muted,
-                        fontSize = 13.sp,
-                    )
-                }
                 message.sources.forEach { source -> SourceLink(source) }
                 message.actions.filter { it.status != "dismissed" }.forEach { action ->
                     Button(

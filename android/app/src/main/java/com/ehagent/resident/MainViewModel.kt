@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
@@ -25,6 +26,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.OffsetDateTime
+import java.io.File
 
 data class UiState(
     val loading: Boolean = true,
@@ -53,6 +55,9 @@ data class UiState(
     val assistantMessages: List<AssistantMessage> = emptyList(),
     val assistantLoading: Boolean = false,
     val assistantError: String? = null,
+    val voiceRecording: Boolean = false,
+    val voiceTranscribing: Boolean = false,
+    val voiceError: String? = null,
     val sleepActionLoading: Boolean = false,
     val sleepHistory: List<SleepHistoryNight> = emptyList(),
     val nightAwakeningExpanded: Boolean = false,
@@ -74,6 +79,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val SAFETY_CHANNEL_ID = "walkway_safety_alerts"
         private const val SAFETY_NOTIFICATION_ID = 4102
         private const val SAFETY_SPEECH_RETRY_MS = 60_000L
+        private const val VOICE_RECORDING_LIMIT_MS = 30_000L
     }
 
     private val preferences = application.getSharedPreferences("connection", 0)
@@ -90,6 +96,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var safetySpeechInFlightCheckId: String? = null
     private var safetySpeechLastAttemptCheckId: String? = null
     private var safetySpeechLastAttemptAtMs: Long = 0L
+    private var voiceRecorder: MediaRecorder? = null
+    private var voiceRecordingFile: File? = null
+    private var voiceRecordingTimeout: Job? = null
+    private var voiceTextConsumer: ((String) -> Unit)? = null
     var backendUrl: String
         get() = preferences.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
         private set(value) { preferences.edit().putString("backend_url", value.trimEnd('/')).apply() }
@@ -134,7 +144,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val needsCurrentReviewData = BuildConfig.DEMO_MODE &&
                 devices.sleepDemoDatasetId != "initial-review-20260902-v1" &&
                 !sleepDemoSeedAttempted
-            if (shouldAutoLoadSleepDemo(dashboard.sleep.duration, sleepDemoSeedAttempted) || needsCurrentReviewData) {
+            if (
+                BuildConfig.DEMO_MODE &&
+                (shouldAutoLoadSleepDemo(dashboard.sleep.duration, sleepDemoSeedAttempted) || needsCurrentReviewData)
+            ) {
                 sleepDemoSeedAttempted = true
                 runCatching { api.loadSleepDemo() }.onSuccess {
                     dashboard = api.dashboard()
@@ -369,6 +382,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun analyzeSafetyFrame(
         image: ByteArray,
+        preview: Boolean = false,
         onSuccess: (SafetyAnalysis) -> Unit,
         onFailure: (String) -> Unit,
     ) = viewModelScope.launch {
@@ -376,7 +390,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             safetyAnalysisLoading = true,
             safetyAnalysisError = null,
         )
-        runCatching { ProductApi(backendUrl).analyzeSafetyFrame(image) }
+        runCatching { ProductApi(backendUrl).analyzeSafetyFrame(image, preview) }
             .onSuccess { analysis ->
                 _state.value = _state.value.copy(
                     safetyAnalysis = analysis,
@@ -552,7 +566,110 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         safetyPlayer = null
         whiteNoiseTimer?.cancel()
         whiteNoisePlayer.stop()
+        voiceRecordingTimeout?.cancel()
+        runCatching { voiceRecorder?.stop() }
+        voiceRecorder?.release()
+        voiceRecorder = null
+        voiceRecordingFile?.delete()
         super.onCleared()
+    }
+
+    fun toggleVoiceInput(onText: (String) -> Unit) {
+        if (_state.value.voiceTranscribing) return
+        if (_state.value.voiceRecording) {
+            finishVoiceRecording()
+        } else {
+            startVoiceRecording(onText)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startVoiceRecording(onText: (String) -> Unit) {
+        val application = getApplication<Application>()
+        val output = File(application.cacheDir, "voice-${System.nanoTime()}.m4a")
+        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            MediaRecorder(application)
+        } else {
+            MediaRecorder()
+        }
+        runCatching {
+            recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioChannels(1)
+            recorder.setAudioSamplingRate(16_000)
+            recorder.setAudioEncodingBitRate(64_000)
+            recorder.setOutputFile(output.absolutePath)
+            recorder.prepare()
+            recorder.start()
+        }.onSuccess {
+            voiceRecorder = recorder
+            voiceRecordingFile = output
+            voiceTextConsumer = onText
+            _state.value = _state.value.copy(
+                voiceRecording = true,
+                voiceTranscribing = false,
+                voiceError = null,
+            )
+            voiceRecordingTimeout?.cancel()
+            voiceRecordingTimeout = viewModelScope.launch {
+                delay(VOICE_RECORDING_LIMIT_MS)
+                finishVoiceRecording()
+            }
+        }.onFailure {
+            recorder.release()
+            output.delete()
+            _state.value = _state.value.copy(
+                voiceRecording = false,
+                voiceTranscribing = false,
+                voiceError = "暂时无法开始录音，请检查麦克风权限",
+            )
+        }
+    }
+
+    private fun finishVoiceRecording() {
+        val recorder = voiceRecorder ?: return
+        val output = voiceRecordingFile
+        voiceRecorder = null
+        voiceRecordingFile = null
+        voiceRecordingTimeout?.cancel()
+        voiceRecordingTimeout = null
+        val stopped = runCatching { recorder.stop() }.isSuccess
+        recorder.release()
+        if (!stopped || output == null || !output.exists()) {
+            output?.delete()
+            _state.value = _state.value.copy(
+                voiceRecording = false,
+                voiceTranscribing = false,
+                voiceError = "录音时间太短，请重新说一次",
+            )
+            return
+        }
+
+        _state.value = _state.value.copy(
+            voiceRecording = false,
+            voiceTranscribing = true,
+            voiceError = null,
+        )
+        viewModelScope.launch {
+            runCatching {
+                ProductApi(backendUrl).transcribeVoice(
+                    withContext(Dispatchers.IO) { output.readBytes() },
+                )
+            }.onSuccess { text ->
+                voiceTextConsumer?.invoke(text)
+                _state.value = _state.value.copy(
+                    voiceTranscribing = false,
+                    voiceError = null,
+                )
+            }.onFailure { error ->
+                _state.value = _state.value.copy(
+                    voiceTranscribing = false,
+                    voiceError = error.message ?: "语音暂时没有识别出来，请稍后再试",
+                )
+            }
+            withContext(Dispatchers.IO) { output.delete() }
+        }
     }
 
     fun setCameraMoving(direction: CameraDirection, moving: Boolean) = viewModelScope.launch {

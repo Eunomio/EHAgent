@@ -18,6 +18,7 @@ from app.devices.ezviz import EzvizClient
 from app.llm.service import LlmService
 from app.sleep.service import SleepService
 from app.sleep.sync import SleepSyncService
+from app.speech.service import SpeechTranscriptionService
 from app.store import ProductStore
 from app.vision.monitor import VisionChangeMonitor
 from app.vision.service import VisionSafetyService
@@ -41,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         store, resolved, ezviz, vision_safety, sleep_sync
     )
     assistant = AssistantService(store, llm, resolved, device_tools)
+    speech_transcription = SpeechTranscriptionService(resolved)
     vision_monitor = VisionChangeMonitor(resolved, ezviz, vision_safety, store)
 
     @asynccontextmanager
@@ -61,6 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await ezviz.close()
         await llm.close()
         await vision_safety.close()
+        await speech_transcription.close()
 
     app = FastAPI(
         title=resolved.app_name,
@@ -77,6 +80,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sleep_sync = sleep_sync
     app.state.vision_safety = vision_safety
     app.state.vision_monitor = vision_monitor
+    app.state.speech_transcription = speech_transcription
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

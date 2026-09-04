@@ -20,7 +20,9 @@ def test_assistant_uses_sleep_context_and_keeps_conversation(client) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert "7小时20分钟" in payload["assistant_message"]["content"]
-    assert "最近一次睡眠摘要" in payload["assistant_message"]["context_used"]
+    assert "context_used" not in payload["assistant_message"]
+    stored = client.app.state.store.assistant_messages(payload["conversation_id"])
+    assert "最近一次睡眠摘要" in stored[-1]["context_used"]
 
     conversation = client.get(
         f"/api/v1/assistant/conversations/{payload['conversation_id']}"

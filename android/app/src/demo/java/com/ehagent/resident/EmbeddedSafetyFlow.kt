@@ -78,6 +78,7 @@ internal fun EmbeddedSafetyFlow(vm: MainViewModel) {
                 .onSuccess { image ->
                     vm.analyzeSafetyFrame(
                         image = image,
+                        preview = true,
                         onSuccess = {
                             result = it
                             checking = false

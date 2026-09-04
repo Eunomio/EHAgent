@@ -155,7 +155,6 @@ data class AssistantMessage(
     val role: String,
     val content: String,
     val sources: List<AssistantSource> = emptyList(),
-    val contextUsed: List<String> = emptyList(),
     val actions: List<AssistantAction> = emptyList(),
 )
 data class AssistantChatResult(
@@ -304,11 +303,13 @@ class ProductApi(private val baseUrl: String) {
         return root.toSafetyAnalysis()
     }
 
-    suspend fun analyzeSafetyFrame(image: ByteArray): SafetyAnalysis {
+    suspend fun analyzeSafetyFrame(image: ByteArray, preview: Boolean = false): SafetyAnalysis {
         val root = request(
             "/api/v1/devices/c6c/safety/analyze-frame",
             method = "POST",
-            body = JSONObject().put("image_base64", Base64.encodeToString(image, Base64.NO_WRAP)),
+            body = JSONObject()
+                .put("image_base64", Base64.encodeToString(image, Base64.NO_WRAP))
+                .put("preview", preview),
             readTimeoutMillis = 120_000,
         )
         return root.toSafetyAnalysis()
@@ -440,6 +441,31 @@ class ProductApi(private val baseUrl: String) {
         )
     }
 
+    suspend fun transcribeVoice(audio: ByteArray): String = withContext(Dispatchers.IO) {
+        val connection = URL(
+            baseUrl.trimEnd('/') + "/api/v1/assistant/transcribe",
+        ).openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 90_000
+        connection.doOutput = true
+        connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Content-Type", "audio/mp4")
+        connection.setFixedLengthStreamingMode(audio.size)
+        connection.outputStream.use { it.write(audio) }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val responseText = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+        connection.disconnect()
+        val payload = JSONObject(responseText.ifBlank { "{}" })
+        if (code !in 200..299) {
+            throw IllegalStateException(payload.optString("detail", "语音暂时没有识别出来"))
+        }
+        payload.optString("text").trim().ifBlank {
+            throw IllegalStateException("没有听清，请靠近手机再说一次")
+        }
+    }
+
     suspend fun assistantConversation(conversationId: String): List<AssistantMessage> {
         return request("/api/v1/assistant/conversations/$conversationId")
             .getJSONArray("messages").mapObjects { it.toAssistantMessage() }
@@ -527,7 +553,6 @@ private fun JSONObject.toAssistantMessage(): AssistantMessage = AssistantMessage
     sources = optJSONArray("sources")?.mapObjects {
         AssistantSource(it.optString("title", "查看来源"), it.getString("url"))
     }.orEmpty(),
-    contextUsed = optJSONArray("context_used")?.mapStrings().orEmpty(),
     actions = optJSONArray("actions")?.mapObjects { it.toAssistantAction() }.orEmpty(),
 )
 

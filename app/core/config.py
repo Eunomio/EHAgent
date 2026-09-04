@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     tts_speed: float = Field(default=0.9, ge=0.25, le=4.0)
     assistant_web_search_enabled: bool = True
     assistant_location: str = ""
+    asr_enabled: bool = False
+    asr_api_key: str = ""
+    asr_model: str = "whisper-1"
+    asr_api_base: str = "https://api.openai.com/v1"
+    asr_language: str = "zh"
+    asr_timeout_seconds: float = Field(default=60, ge=5, le=120)
+    asr_max_audio_bytes: int = Field(
+        default=10 * 1024 * 1024, ge=1024, le=25 * 1024 * 1024
+    )
 
 
 @lru_cache(maxsize=1)

@@ -28,6 +28,7 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 class SafetyFrameIn(BaseModel):
     image_base64: str = Field(min_length=16, max_length=16 * 1024 * 1024)
+    preview: bool = False
 
 
 @router.get("")
@@ -347,4 +348,13 @@ async def analyze_c6c_safety_frame(
     except VisionSafetyError as exc:
         raise HTTPException(502, str(exc)) from exc
 
+    if payload.preview:
+        return {
+            **result,
+            "notification_required": False,
+            "speech_auto_play": False,
+            "recheck": False,
+            "check_id": None,
+            "task_id": None,
+        }
     return record_safety_result(store, settings, result)

@@ -8,6 +8,7 @@ from app.devices.ezviz import EzvizClient
 from app.llm.service import LlmService
 from app.sleep.service import SleepService
 from app.sleep.sync import SleepSyncService
+from app.speech.service import SpeechTranscriptionService
 from app.store import ProductStore
 from app.vision.service import VisionSafetyService
 
@@ -44,6 +45,10 @@ def get_vision_safety(request: Request) -> VisionSafetyService:
     return cast(VisionSafetyService, request.app.state.vision_safety)
 
 
+def get_speech_transcription(request: Request) -> SpeechTranscriptionService:
+    return cast(SpeechTranscriptionService, request.app.state.speech_transcription)
+
+
 StoreDep = Annotated[ProductStore, Depends(get_store)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 EzvizDep = Annotated[EzvizClient, Depends(get_ezviz)]
@@ -52,3 +57,6 @@ AssistantDep = Annotated[AssistantService, Depends(get_assistant)]
 SleepDep = Annotated[SleepService, Depends(get_sleep)]
 SleepSyncDep = Annotated[SleepSyncService, Depends(get_sleep_sync)]
 VisionSafetyDep = Annotated[VisionSafetyService, Depends(get_vision_safety)]
+SpeechTranscriptionDep = Annotated[
+    SpeechTranscriptionService, Depends(get_speech_transcription)
+]

@@ -68,7 +68,11 @@ def test_vlm_result_creates_one_proactive_event(client) -> None:
     assert started.status_code == 200
     started_message = started.json()["assistant_message"]
     assert "为什么询问" not in started_message["content"]
-    assert started_message["context_used"][0].startswith("触发原因")
+    assert "context_used" not in started_message
+    stored_messages = client.app.state.store.assistant_messages(
+        started.json()["conversation_id"]
+    )
+    assert stored_messages[-1]["context_used"][0].startswith("触发原因")
     assert [item["label"] for item in started_message["actions"]] == [
         "我现在处理", "稍后提醒我", "我现在不方便处理",
     ]

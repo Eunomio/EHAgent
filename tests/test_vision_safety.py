@@ -232,6 +232,42 @@ def test_safety_frame_uses_existing_vision_analysis(client) -> None:
     assert response.json()["task_id"]
 
 
+def test_safety_frame_preview_does_not_create_product_records(client) -> None:
+    async def fake_analyze_image(image: bytes, content_type: str) -> dict[str, object]:
+        return {
+            "checked_at": "2026-09-03T18:02:00+08:00",
+            "prediction": {},
+            "assessment": {
+                "risk_level": "high",
+                "headline": "通道通行受阻",
+                "action_text": "请及时整理通道",
+            },
+            "reason": "演示画面中的玩具影响通行。",
+            "hazard_regions": [],
+            "evidence_path": "preview-frame.jpg",
+        }
+
+    client.app.state.vision_safety.analyze_image = fake_analyze_image
+    image = b"demo-frame" * 20
+    response = client.post(
+        "/api/v1/devices/c6c/safety/analyze-frame",
+        json={
+            "image_base64": base64.b64encode(image).decode("ascii"),
+            "preview": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["assessment"]["risk_level"] == "high"
+    assert body["check_id"] is None
+    assert body["task_id"] is None
+    assert body["notification_required"] is False
+    assert client.app.state.store.recent_checks() == []
+    assert client.app.state.store.latest_task(include_deferred=True) is None
+    assert client.app.state.store.proactive_events() == []
+
+
 def test_analysis_retries_when_platform_omits_required_fields(tmp_path: Path) -> None:
     async def scenario() -> None:
         analysis_request_count = 0
