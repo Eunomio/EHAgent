@@ -104,13 +104,13 @@ POST /api/v1/devices/sleep/sync?target_date=YYYY-MM-DD
 
 后端默认在北京时间 10:00 同步前一晚，并在启动时补拉最近三天。可用 `EH_SLEEP_AUTO_SYNC_ENABLED`、`EH_SLEEP_SYNC_HOUR`、`EH_SLEEP_SYNC_MINUTE`、`EH_SLEEP_SYNC_LOOKBACK_DAYS` 和 `EH_SLEEP_SYNC_UTC_OFFSET_HOURS` 调整。页面读取本地数据库；外部接口失败不会阻塞既有报告。
 
-本地开发环境提供 `POST /api/v1/devices/sleep/demo` 和 `DELETE /api/v1/devices/sleep/demo`。前者导入随源码提交的 `app/sleep/demo_sleep_20260824.json`（8 晚固定、非敏感记录），后者只删除对应 `demo_dataset_id`。演示数据来源为 `demo_generated`，基线只在同一数据集内计算；生产环境拒绝这两个操作。Android 新安装在首次连接空数据库时自动尝试导入一次，用户手动清除后不会因页面刷新而自动恢复，仍可在“我的”页面主动重新导入。
+本地开发环境提供 `POST /api/v1/devices/sleep/demo` 和 `DELETE /api/v1/devices/sleep/demo`。前者导入随源码提交的 `app/sleep/demo_sleep_healthy_baseline.json` 与 `app/sleep/demo_sleep_return_delay.json`：第一组为7晚健康基线，第二组为7晚变化数据，其中第1、2晚正常，第3、4晚起夜后长时间清醒，第5晚缓解，第6、7晚回归稳态。导入前只替换旧的 `demo_generated` 数据，不影响真实设备记录；后者只删除当前 `demo_dataset_id`。两组记录共享一个演示数据集，使变化组能够与前7晚个人基线比较。生产环境拒绝这两个操作。Android Demo 包按新的数据集版本自动导入一次，用户手动清除后不会因页面刷新恢复，仍可在“我的”页面主动重新导入。
 
 个人基线使用当前夜之前最多 14 晚有效记录，至少 7 晚后启用。睡眠时长、平均心率和平均呼吸率分别计算中位数与 MAD，仅描述是否与近期个人水平有变化。当前产品不输出跌倒风险、行动能力、认知状态或心理健康预测。
 
 睡眠页包含可展开的“起夜关注”子模块。它只在收到可靠离床事件后，把本次睡眠快照与个人基线作确定性比较：睡眠时长减少、平均心率升高、平均呼吸率升高属于关注方向，至少两项达到既有基线变化阈值时显示“需要多留意”。该结果是预防性提示，不是跌倒概率或医疗判断；离床次数只作事实展示，不参与关注度计算。睡眠段未结束时，累计睡眠时长不得和整夜基线比较。
 
-本地开发环境可在导入 8 晚演示数据后调用：
+本地开发环境可在导入14晚演示数据后调用：
 
 ```text
 POST /api/v1/devices/sleep/demo/night-awakening

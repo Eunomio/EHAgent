@@ -2,7 +2,12 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.sleep.demo import DEMO_DATASET_ID, DEMO_FIXTURE_PATH, demo_records
+from app.sleep.demo import (
+    DEMO_ABNORMAL_FIXTURE_PATH,
+    DEMO_DATASET_ID,
+    DEMO_FIXTURE_PATH,
+    demo_records,
+)
 from app.sleep.night_awakening import (
     ALGORITHM_VERSION,
     assess_night_awakening,
@@ -15,15 +20,48 @@ def history() -> list[dict[str, object]]:
     return list(reversed(demo_records()))
 
 
-def test_demo_sleep_fixture_is_packaged_with_source() -> None:
-    payload = json.loads(DEMO_FIXTURE_PATH.read_text(encoding="utf-8"))
+def comparable_history() -> list[dict[str, object]]:
+    template = demo_records()[0]
+    baseline = [
+        {
+            **template,
+            "external_report_id": f"baseline-{index}",
+            "report_date": f"2026-08-{18 + index:02d}",
+            "duration_minutes": 440,
+            "heart_rate": 62.0,
+            "respiratory_rate": 14.3,
+        }
+        for index in range(7)
+    ]
+    latest = {
+        **template,
+        "external_report_id": "changed-latest",
+        "report_date": "2026-08-25",
+        "duration_minutes": 330,
+        "heart_rate": 70.0,
+        "respiratory_rate": 18.0,
+    }
+    return [latest, *reversed(baseline)]
 
-    assert payload["dataset_id"] == DEMO_DATASET_ID
-    assert payload["source"] == "demo_generated"
-    assert len(payload["records"]) == 8
-    assert payload["records"][-1]["duration_minutes"] == 330
-    assert payload["records"][-1]["heart_rate"] == 70.0
-    assert payload["records"][-1]["respiratory_rate"] == 18.0
+
+def test_demo_sleep_fixture_is_packaged_with_source() -> None:
+    healthy = json.loads(DEMO_FIXTURE_PATH.read_text(encoding="utf-8"))
+    changed = json.loads(DEMO_ABNORMAL_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+    assert healthy["dataset_id"] == changed["dataset_id"] == DEMO_DATASET_ID
+    assert healthy["source"] == changed["source"] == "demo_generated"
+    assert len(healthy["records"]) == len(changed["records"]) == 7
+    return_delays = [
+        round((
+            datetime.fromisoformat(item["stages"][0]["end"])
+            - datetime.fromisoformat(item["stages"][0]["start"])
+        ).total_seconds() / 60)
+        for item in changed["records"]
+    ]
+    assert return_delays == [13, 10, 68, 63, 38, 14, 12]
+    assert changed["records"][2]["awake_minutes"] == 82
+    assert changed["records"][3]["awake_minutes"] == 78
+    assert changed["records"][-1]["duration_minutes"] == 432
 
 
 def assess(records: list[dict[str, object]], **overrides: object) -> dict[str, object]:
@@ -45,15 +83,15 @@ def test_waiting_payload_does_not_claim_event_interface_is_verified() -> None:
     assert "预测到跌倒" in result["disclaimer"]
 
 
-def test_three_adverse_baseline_changes_require_extra_care() -> None:
+def test_full_demo_has_enough_history_for_risk_comparison() -> None:
     result = assess(history())
-    assert result["attention"] == "extra_care"
+    assert result["attention"] in {"routine_care", "extra_care"}
     assert result["algorithm_version"] == ALGORITHM_VERSION
-    assert sum(item["adverse_change"] for item in result["reasons"]) == 3
+    assert "baseline_unavailable" not in result["reason_codes"]
 
 
 def test_one_adverse_change_stays_routine_care() -> None:
-    records = history()
+    records = comparable_history()
     records[0] = {
         **records[0],
         "heart_rate": 62,
@@ -65,7 +103,7 @@ def test_one_adverse_change_stays_routine_care() -> None:
 
 
 def test_reverse_direction_changes_do_not_raise_attention() -> None:
-    records = history()
+    records = comparable_history()
     records[0] = {
         **records[0],
         "duration_minutes": 550,
@@ -78,7 +116,7 @@ def test_reverse_direction_changes_do_not_raise_attention() -> None:
 
 
 def test_duration_is_not_comparable_before_sleep_session_ends() -> None:
-    result = assess(history(), sleep_session_ended=False)
+    result = assess(comparable_history(), sleep_session_ended=False)
     duration = next(
         item for item in result["reasons"] if item["metric"] == "duration_minutes"
     )

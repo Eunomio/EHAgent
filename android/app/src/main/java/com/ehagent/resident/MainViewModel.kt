@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
@@ -15,6 +16,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -23,6 +26,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.OffsetDateTime
+import java.io.File
 
 data class UiState(
     val loading: Boolean = true,
@@ -51,8 +55,22 @@ data class UiState(
     val assistantMessages: List<AssistantMessage> = emptyList(),
     val assistantLoading: Boolean = false,
     val assistantError: String? = null,
+    val voiceRecording: Boolean = false,
+    val voiceTranscribing: Boolean = false,
+    val voiceError: String? = null,
     val sleepActionLoading: Boolean = false,
+    val sleepHistory: List<SleepHistoryNight> = emptyList(),
     val nightAwakeningExpanded: Boolean = false,
+    val whiteNoisePlaying: Boolean = false,
+    val whiteNoisePaused: Boolean = false,
+    val whiteNoiseLoading: Boolean = false,
+    val whiteNoiseElapsedSeconds: Int = 0,
+    val whiteNoiseRemainingSeconds: Int = 0,
+    val whiteNoiseTrackId: String? = null,
+    val whiteNoiseTrackName: String? = null,
+    val whiteNoiseCanSwitch: Boolean = false,
+    val whiteNoiseVolume: Float = 0.35f,
+    val whiteNoiseError: String? = null,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -61,6 +79,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val SAFETY_CHANNEL_ID = "walkway_safety_alerts"
         private const val SAFETY_NOTIFICATION_ID = 4102
         private const val SAFETY_SPEECH_RETRY_MS = 60_000L
+        private const val VOICE_RECORDING_LIMIT_MS = 30_000L
     }
 
     private val preferences = application.getSharedPreferences("connection", 0)
@@ -70,9 +89,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val safetyRefreshMutex = Mutex()
     private val cameraMoveStartedAt = mutableMapOf<CameraDirection, Long>()
     private var safetyPlayer: MediaPlayer? = null
+    private val whiteNoisePlayer = WhiteNoisePlayer()
+    private var whiteNoiseTimer: Job? = null
+    private var whiteNoisePlaylist: List<WhiteNoiseTrack> = emptyList()
+    private var whiteNoiseTrackIndex: Int = -1
     private var safetySpeechInFlightCheckId: String? = null
     private var safetySpeechLastAttemptCheckId: String? = null
     private var safetySpeechLastAttemptAtMs: Long = 0L
+    private var voiceRecorder: MediaRecorder? = null
+    private var voiceRecordingFile: File? = null
+    private var voiceRecordingTimeout: Job? = null
+    private var voiceTextConsumer: ((String) -> Unit)? = null
     var backendUrl: String
         get() = preferences.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
         private set(value) { preferences.edit().putString("backend_url", value.trimEnd('/')).apply() }
@@ -89,8 +116,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         set(value) { preferences.edit().putString("night_awakening_auto_expanded_id", value).apply() }
 
     private var sleepDemoSeedAttempted: Boolean
-        get() = preferences.getBoolean("sleep_demo_seed_attempted", false)
-        set(value) { preferences.edit().putBoolean("sleep_demo_seed_attempted", value).apply() }
+        get() = preferences.getBoolean("sleep_return_care_seed_v1", false)
+        set(value) { preferences.edit().putBoolean("sleep_return_care_seed_v1", value).apply() }
 
     private var savedBaselineNeedsRefresh: Boolean
         get() = preferences.getBoolean("safety_baseline_needs_refresh", false)
@@ -114,7 +141,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var devices = api.devices()
             val settings = api.settings()
             val profileFacts = runCatching { api.profileFacts() }.getOrDefault(emptyList())
-            if (shouldAutoLoadSleepDemo(dashboard.sleep.duration, sleepDemoSeedAttempted)) {
+            val needsCurrentReviewData = BuildConfig.DEMO_MODE &&
+                devices.sleepDemoDatasetId != "sleep-return-care-20260904-v1" &&
+                !sleepDemoSeedAttempted
+            if (
+                BuildConfig.DEMO_MODE &&
+                (shouldAutoLoadSleepDemo(dashboard.sleep.duration, sleepDemoSeedAttempted) || needsCurrentReviewData)
+            ) {
                 sleepDemoSeedAttempted = true
                 runCatching { api.loadSleepDemo() }.onSuccess {
                     dashboard = api.dashboard()
@@ -123,6 +156,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else if (!sleepDemoSeedAttempted) {
                 sleepDemoSeedAttempted = true
             }
+            val sleepHistory = runCatching { api.sleepHistory() }.getOrDefault(emptyList())
             val safetyBaseline = runCatching { api.safetyBaseline() }
                 .getOrDefault(_state.value.safetyBaseline)
             val latestSafetyAnalysis = runCatching { api.latestSafetyAnalysis() }
@@ -155,6 +189,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 safetyAnalysis = latestSafetyAnalysis,
                 safetyBaselineNeedsRefresh = savedBaselineNeedsRefresh,
                 nightAwakeningExpanded = if (autoExpand) true else nightAwakeningExpanded,
+                sleepHistory = sleepHistory,
                 error = null,
             )
             latestSafetyAnalysis?.let(::handleSafetyAlert)
@@ -345,6 +380,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
     }
 
+    fun analyzeSafetyFrame(
+        image: ByteArray,
+        preview: Boolean = false,
+        baselineImage: ByteArray? = null,
+        onSuccess: (SafetyAnalysis) -> Unit,
+        onFailure: (String) -> Unit,
+    ) = viewModelScope.launch {
+        _state.value = _state.value.copy(
+            safetyAnalysisLoading = true,
+            safetyAnalysisError = null,
+        )
+        runCatching { ProductApi(backendUrl).analyzeSafetyFrame(image, preview, baselineImage) }
+            .onSuccess { analysis ->
+                _state.value = _state.value.copy(
+                    safetyAnalysis = analysis,
+                    safetyAnalysisLoading = false,
+                )
+                handleSafetyAlert(analysis)
+                onSuccess(analysis)
+                refresh()
+            }
+            .onFailure {
+                val message = it.message ?: "本次检查没有完成，请稍后重试"
+                _state.value = _state.value.copy(
+                    safetyAnalysisLoading = false,
+                    safetyAnalysisError = message,
+                )
+                onFailure(message)
+            }
+    }
+
+    fun prepareSafetyRecheck(
+        taskId: String?,
+        onReady: () -> Unit,
+        onFailure: (String) -> Unit,
+    ) = viewModelScope.launch {
+        if (taskId == null) {
+            onReady()
+            return@launch
+        }
+        runCatching { ProductApi(backendUrl).taskAction(taskId, "done") }
+            .onSuccess {
+                onReady()
+                refresh()
+            }
+            .onFailure { onFailure(it.message ?: "暂时无法重新检查，请稍后再试") }
+    }
+
     fun replaySafetySpeech() {
         val analysis = _state.value.safetyAnalysis ?: return
         val speechUrl = analysis.speechUrl ?: return
@@ -482,7 +565,112 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         safetyPlayer?.release()
         safetyPlayer = null
+        whiteNoiseTimer?.cancel()
+        whiteNoisePlayer.stop()
+        voiceRecordingTimeout?.cancel()
+        runCatching { voiceRecorder?.stop() }
+        voiceRecorder?.release()
+        voiceRecorder = null
+        voiceRecordingFile?.delete()
         super.onCleared()
+    }
+
+    fun toggleVoiceInput(onText: (String) -> Unit) {
+        if (_state.value.voiceTranscribing) return
+        if (_state.value.voiceRecording) {
+            finishVoiceRecording()
+        } else {
+            startVoiceRecording(onText)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startVoiceRecording(onText: (String) -> Unit) {
+        val application = getApplication<Application>()
+        val output = File(application.cacheDir, "voice-${System.nanoTime()}.m4a")
+        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            MediaRecorder(application)
+        } else {
+            MediaRecorder()
+        }
+        runCatching {
+            recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioChannels(1)
+            recorder.setAudioSamplingRate(16_000)
+            recorder.setAudioEncodingBitRate(64_000)
+            recorder.setOutputFile(output.absolutePath)
+            recorder.prepare()
+            recorder.start()
+        }.onSuccess {
+            voiceRecorder = recorder
+            voiceRecordingFile = output
+            voiceTextConsumer = onText
+            _state.value = _state.value.copy(
+                voiceRecording = true,
+                voiceTranscribing = false,
+                voiceError = null,
+            )
+            voiceRecordingTimeout?.cancel()
+            voiceRecordingTimeout = viewModelScope.launch {
+                delay(VOICE_RECORDING_LIMIT_MS)
+                finishVoiceRecording()
+            }
+        }.onFailure {
+            recorder.release()
+            output.delete()
+            _state.value = _state.value.copy(
+                voiceRecording = false,
+                voiceTranscribing = false,
+                voiceError = "暂时无法开始录音，请检查麦克风权限",
+            )
+        }
+    }
+
+    private fun finishVoiceRecording() {
+        val recorder = voiceRecorder ?: return
+        val output = voiceRecordingFile
+        voiceRecorder = null
+        voiceRecordingFile = null
+        voiceRecordingTimeout?.cancel()
+        voiceRecordingTimeout = null
+        val stopped = runCatching { recorder.stop() }.isSuccess
+        recorder.release()
+        if (!stopped || output == null || !output.exists()) {
+            output?.delete()
+            _state.value = _state.value.copy(
+                voiceRecording = false,
+                voiceTranscribing = false,
+                voiceError = "录音时间太短，请重新说一次",
+            )
+            return
+        }
+
+        _state.value = _state.value.copy(
+            voiceRecording = false,
+            voiceTranscribing = true,
+            voiceError = null,
+        )
+        viewModelScope.launch {
+            runCatching {
+                ProductApi(backendUrl).transcribeVoice(
+                    withContext(Dispatchers.IO) { output.readBytes() },
+                )
+            }.onSuccess { text ->
+                voiceTextConsumer?.invoke(text)
+                _state.value = _state.value.copy(
+                    voiceTranscribing = false,
+                    voiceError = null,
+                )
+            }.onFailure { error ->
+                _state.value = _state.value.copy(
+                    voiceTranscribing = false,
+                    voiceError = error.message ?: "语音暂时没有识别出来，请稍后再试",
+                )
+            }
+            withContext(Dispatchers.IO) { output.delete() }
+        }
     }
 
     fun setCameraMoving(direction: CameraDirection, moving: Boolean) = viewModelScope.launch {
@@ -665,7 +853,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sleepDemoSeedAttempted = true
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
-                    notice = "8晚演示睡眠数据已导入",
+                    notice = "健康基线和变化组睡眠数据已导入",
                 )
                 refresh()
             }
@@ -683,7 +871,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
                     nightAwakeningExpanded = false,
-                    notice = "演示睡眠数据已清除",
+                    notice = "近期睡眠记录已清除",
                 )
                 refresh()
             }
@@ -705,14 +893,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess {
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
-                    notice = "演示起夜关注已激活",
+                    notice = "起夜关注已开启",
                 )
                 refresh()
             }
             .onFailure {
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
-                    error = it.message ?: "演示起夜关注激活失败",
+                    error = it.message ?: "起夜关注开启失败",
                 )
             }
     }
@@ -726,14 +914,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
                     nightAwakeningExpanded = false,
-                    notice = "演示起夜关注已重置",
+                    notice = "起夜关注已重置",
                 )
                 refresh()
             }
             .onFailure {
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
-                    error = it.message ?: "演示起夜关注重置失败",
+                    error = it.message ?: "起夜关注重置失败",
                 )
             }
     }
@@ -795,6 +983,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             refreshSafetyStatus()
             refreshPrivacyAndDeviceSettings()
+            result.assistantMessage.actions.firstOrNull {
+                it.autoStart && it.status == "pending" &&
+                    it.kind == "start_intervention" && it.interventionId == "white_noise_30min"
+            }?.let { confirmAssistantAction(it.id) }
         }.onFailure {
             _state.value = _state.value.copy(
                 assistantMessages = _state.value.assistantMessages.filterNot {
@@ -806,14 +998,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val confirmingAssistantActions = mutableSetOf<String>()
+
     fun confirmAssistantAction(actionId: String) = viewModelScope.launch {
+        if (!confirmingAssistantActions.add(actionId)) return@launch
+        val selectedAction = _state.value.assistantMessages
+            .asSequence()
+            .flatMap { it.actions.asSequence() }
+            .firstOrNull { it.id == actionId }
         runCatching { ProductApi(backendUrl).confirmAssistantAction(actionId) }
             .onSuccess { updated ->
-                val notice = when (updated.kind) {
+                val isWhiteNoise = updated.kind == "start_intervention" &&
+                    (updated.interventionId ?: selectedAction?.interventionId) == "white_noise_30min"
+                val notice = if (updated.status == "unsupported") {
+                    "小安现在还不能提供这项功能。您可以让我播放助眠声音。"
+                } else when (updated.kind) {
                     "contact_family" -> "已请家人联系您"
                     "remember_profile_fact" -> "小安已经按您的同意记下"
                     "reject_profile_fact" -> "好的，小安不会记下这件事"
-                    "start_intervention" -> "支持内容已经开始"
+                    "start_intervention" -> if (
+                        isWhiteNoise
+                    ) "正在为您选择白噪音" else "小安现在还不能提供这项功能"
                     "defer_event" -> "将在30分钟后再提醒"
                     "pause_proactive_care" -> "主动关怀已暂停"
                     "device_control_allow" -> "已允许小安控制已连接设备"
@@ -858,12 +1063,183 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (updated.kind in setOf("device_control_allow", "device_control_deny")) {
                     refreshPrivacyAndDeviceSettings()
                 }
+                if (isWhiteNoise) startWhiteNoise()
             }
             .onFailure {
                 _state.value = _state.value.copy(
                     assistantError = "暂时没有发出请求，请稍后再试。"
                 )
             }
+        confirmingAssistantActions.remove(actionId)
+    }
+
+    fun stopWhiteNoise() {
+        whiteNoiseTimer?.cancel()
+        whiteNoiseTimer = null
+        whiteNoisePlayer.stop()
+        whiteNoisePlaylist = emptyList()
+        whiteNoiseTrackIndex = -1
+        _state.value = _state.value.copy(
+            whiteNoisePlaying = false,
+            whiteNoisePaused = false,
+            whiteNoiseLoading = false,
+            whiteNoiseElapsedSeconds = 0,
+            whiteNoiseRemainingSeconds = 0,
+            whiteNoiseTrackId = null,
+            whiteNoiseTrackName = null,
+            whiteNoiseCanSwitch = false,
+            whiteNoiseError = null,
+            notice = "白噪音已停止",
+        )
+    }
+
+    fun toggleWhiteNoisePlayback() {
+        when {
+            _state.value.whiteNoisePlaying -> {
+                whiteNoisePlayer.pause()
+                _state.value = _state.value.copy(
+                    whiteNoisePlaying = false,
+                    whiteNoisePaused = true,
+                    notice = "白噪音已暂停",
+                )
+            }
+            _state.value.whiteNoisePaused -> {
+                whiteNoisePlayer.resume()
+                _state.value = _state.value.copy(
+                    whiteNoisePlaying = true,
+                    whiteNoisePaused = false,
+                    notice = "继续播放白噪音",
+                )
+            }
+        }
+    }
+
+    fun previousWhiteNoise() = changeWhiteNoise(-1)
+
+    fun nextWhiteNoise() = changeWhiteNoise(1)
+
+    fun setWhiteNoiseVolume(volume: Float) {
+        val safeVolume = volume.coerceIn(0.05f, 0.7f)
+        whiteNoisePlayer.setVolume(safeVolume)
+        _state.value = _state.value.copy(whiteNoiseVolume = safeVolume)
+    }
+
+    fun retryWhiteNoise() = viewModelScope.launch { startWhiteNoise() }
+
+    private fun changeWhiteNoise(offset: Int) = viewModelScope.launch {
+        if (whiteNoisePlaylist.size < 2 || _state.value.whiteNoiseLoading) return@launch
+        whiteNoiseTrackIndex = Math.floorMod(
+            whiteNoiseTrackIndex + offset,
+            whiteNoisePlaylist.size,
+        )
+        playWhiteNoiseTrack(whiteNoisePlaylist[whiteNoiseTrackIndex], resetTimer = false)
+    }
+
+    private suspend fun startWhiteNoise() {
+        whiteNoiseTimer?.cancel()
+        whiteNoisePlayer.stop()
+        _state.value = _state.value.copy(
+            whiteNoiseLoading = true,
+            whiteNoiseError = null,
+            assistantError = null,
+        )
+        runCatching { ProductApi(backendUrl).whiteNoiseTracks() }
+            .onSuccess { tracks ->
+                if (tracks.isEmpty()) {
+                    showWhiteNoiseError("白噪音素材库中暂时没有可播放的音频")
+                    return@onSuccess
+                }
+                whiteNoisePlaylist = tracks.shuffled()
+                whiteNoiseTrackIndex = 0
+                playWhiteNoiseTrack(whiteNoisePlaylist.first(), resetTimer = true)
+            }
+            .onFailure {
+                showWhiteNoiseError("白噪音素材暂时无法获取，请检查家庭服务连接。")
+            }
+    }
+
+    private fun playWhiteNoiseTrack(track: WhiteNoiseTrack, resetTimer: Boolean) {
+        _state.value = _state.value.copy(
+            whiteNoisePlaying = false,
+            whiteNoisePaused = false,
+            whiteNoiseLoading = true,
+            assistantError = null,
+        )
+        runCatching {
+            whiteNoisePlayer.start(
+                url = track.audioUrl,
+                onStarted = {
+                    _state.value = _state.value.copy(
+                        whiteNoisePlaying = true,
+                        whiteNoisePaused = false,
+                        whiteNoiseLoading = false,
+                        whiteNoiseTrackId = track.id,
+                        whiteNoiseTrackName = track.name,
+                        whiteNoiseCanSwitch = whiteNoisePlaylist.size > 1,
+                        whiteNoiseError = null,
+                        notice = "正在播放：${track.name}",
+                    )
+                    if (resetTimer) startWhiteNoiseTimer()
+                },
+                onError = {
+                    showWhiteNoiseError("这条音频暂时无法播放，请尝试上一首或下一首。")
+                },
+            )
+        }.onFailure {
+            showWhiteNoiseError("这条音频暂时无法播放，请尝试上一首或下一首。")
+        }
+    }
+
+    private fun startWhiteNoiseTimer() {
+        whiteNoiseTimer?.cancel()
+        _state.value = _state.value.copy(
+            whiteNoiseElapsedSeconds = 0,
+            whiteNoiseRemainingSeconds = 30 * 60,
+        )
+        whiteNoiseTimer = viewModelScope.launch {
+            while (_state.value.whiteNoiseRemainingSeconds > 0) {
+                delay(1_000L)
+                if (_state.value.whiteNoisePlaying) {
+                    _state.value = _state.value.copy(
+                        whiteNoiseElapsedSeconds = _state.value.whiteNoiseElapsedSeconds + 1,
+                        whiteNoiseRemainingSeconds = _state.value.whiteNoiseRemainingSeconds - 1,
+                    )
+                }
+            }
+            whiteNoisePlayer.stop()
+            whiteNoisePlaylist = emptyList()
+            whiteNoiseTrackIndex = -1
+            _state.value = _state.value.copy(
+                whiteNoisePlaying = false,
+                whiteNoisePaused = false,
+                whiteNoiseLoading = false,
+                whiteNoiseElapsedSeconds = 0,
+                whiteNoiseRemainingSeconds = 0,
+                whiteNoiseTrackId = null,
+                whiteNoiseTrackName = null,
+                whiteNoiseCanSwitch = false,
+                whiteNoiseError = null,
+                notice = "白噪音已播放完毕",
+            )
+        }
+    }
+
+    private fun showWhiteNoiseError(message: String) {
+        whiteNoisePlayer.stop()
+        whiteNoiseTimer?.cancel()
+        whiteNoiseTimer = null
+        _state.value = _state.value.copy(
+            whiteNoisePlaying = false,
+            whiteNoisePaused = false,
+            whiteNoiseLoading = false,
+            whiteNoiseElapsedSeconds = 0,
+            whiteNoiseRemainingSeconds = 0,
+            whiteNoiseTrackId = null,
+            whiteNoiseTrackName = null,
+            whiteNoiseCanSwitch = false,
+            whiteNoiseError = message,
+            assistantError = null,
+        )
     }
 
     private suspend fun refreshPrivacyAndDeviceSettings() {

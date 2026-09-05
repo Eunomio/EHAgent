@@ -20,7 +20,9 @@ def test_assistant_uses_sleep_context_and_keeps_conversation(client) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert "7小时20分钟" in payload["assistant_message"]["content"]
-    assert "最近一次睡眠摘要" in payload["assistant_message"]["context_used"]
+    assert "context_used" not in payload["assistant_message"]
+    stored = client.app.state.store.assistant_messages(payload["conversation_id"])
+    assert "最近一次睡眠摘要" in stored[-1]["context_used"]
 
     conversation = client.get(
         f"/api/v1/assistant/conversations/{payload['conversation_id']}"
@@ -52,6 +54,48 @@ def test_assistant_requires_confirmation_before_contacting_family(client) -> Non
 def test_missing_assistant_conversation_returns_404(client) -> None:
     response = client.get("/api/v1/assistant/conversations/missing")
     assert response.status_code == 404
+
+
+def test_sleep_demo_uses_existing_proactive_conversation(client, monkeypatch) -> None:
+    calls = []
+
+    async def model_reply(message, context, history):
+        calls.append((message, context, history))
+        assert context["sleep_care"]["trigger_report"]["report_date"]
+        return f"模型动态回复{len(calls)}", [], "llm"
+
+    monkeypatch.setattr(client.app.state.llm, "chat_assistant", model_reply)
+    loaded = client.post("/api/v1/devices/sleep/demo")
+    assert loaded.status_code == 200
+    event = client.get("/api/v1/resident/dashboard").json()["care"]["active"]
+    assert "昨天半夜醒了" in event["message"]
+
+    started = client.post(f"/api/v1/assistant/events/{event['id']}/start").json()
+    conversation_id = started["conversation_id"]
+    assert started["assistant_message"]["content"] == "模型动态回复1"
+    first = client.post(
+        "/api/v1/assistant/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "哎呀，我昨晚起来以后再躺下就睡不着了，白天也没有精神。",
+        },
+    ).json()
+    assert first["assistant_message"]["content"] == "模型动态回复2"
+
+    second = client.post(
+        "/api/v1/assistant/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "身体没有不舒服，就是脑子清醒了，后来一直睡不着。",
+        },
+    ).json()
+    assert second["assistant_message"]["content"] == "模型动态回复3"
+    third = client.post("/api/v1/assistant/chat", json={
+        "conversation_id": conversation_id, "message": "不想听声音，想换个话题",
+    }).json()
+    assert third["assistant_message"]["content"] == "模型动态回复4"
+    assert calls[-1][0] == "不想听声音，想换个话题"
+    assert any("身体没有不舒服" in item["content"] for item in calls[-1][2])
 
 
 def test_device_control_asks_once_then_executes_without_repeating_consent(client) -> None:
@@ -222,3 +266,28 @@ def test_low_sensitivity_preference_is_visible_ambient_memory(client) -> None:
     assert profile["inferred"][0]["display_text"] == "喜欢早上听戏"
     assert profile["inferred"][0]["status"] == "inferred"
     assert profile["visible"][0]["id"] == profile["inferred"][0]["id"]
+
+
+def test_night_awakening_offers_white_noise_and_starts_only_after_consent(client) -> None:
+    response = client.post(
+        "/api/v1/assistant/chat",
+        json={"message": "我起夜以后很难再次入睡"},
+    )
+    assert response.status_code == 200
+    message = response.json()["assistant_message"]
+    assert "白噪音" in message["content"]
+    action = next(
+        item for item in message["actions"]
+        if item["kind"] == "start_intervention"
+    )
+    assert action["payload"]["intervention_id"] == "white_noise_30min"
+    assert client.app.state.store.intervention_sessions(limit=10) == []
+
+    confirmed = client.post(
+        f"/api/v1/assistant/actions/{action['id']}/confirm"
+    ).json()
+    assert confirmed["status"] == "completed"
+    assert "正在为您选择" in confirmed["follow_up_message"]["content"]
+    assert "上一首和下一首" in confirmed["follow_up_message"]["content"]
+    sessions = client.app.state.store.intervention_sessions(limit=10)
+    assert sessions[0]["intervention_id"] == "white_noise_30min"

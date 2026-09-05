@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
@@ -86,6 +87,34 @@ internal val Ink = Color(0xFF202622)
 internal val Muted = Color(0xFF66706A)
 internal val Canvas = Color(0xFFF6F7F3)
 
+internal fun safetyRiskLabel(riskLevel: String?): String = when (riskLevel) {
+    "clear" -> "未检测到风险"
+    "low" -> "低风险"
+    "medium" -> "中风险"
+    "high" -> "高风险"
+    "blocked" -> "通道阻塞"
+    "insufficient" -> "画面不清楚"
+    else -> "等待检查"
+}
+
+internal fun safetyRiskForeground(riskLevel: String?): Color = when (riskLevel) {
+    "clear" -> Color(0xFF237A57)
+    "low" -> Color(0xFF8A6A00)
+    "medium" -> Color(0xFFB85C00)
+    "high" -> Color(0xFFC73A31)
+    "blocked" -> Color(0xFF326A8F)
+    else -> Color(0xFF66706A)
+}
+
+internal fun safetyRiskBackground(riskLevel: String?): Color = when (riskLevel) {
+    "clear" -> Color(0xFFE4F3ED)
+    "low" -> Color(0xFFFFF6CC)
+    "medium" -> Color(0xFFFFE8CC)
+    "high" -> Color(0xFFFFE6E3)
+    "blocked" -> Color(0xFFE4F0F7)
+    else -> Color(0xFFF0F2F1)
+}
+
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -116,7 +145,7 @@ private fun EHAgentTheme(content: @Composable () -> Unit) {
 private enum class Page(val label: String, val icon: ImageVector) {
     HOME("首页", Icons.Rounded.Home), SAFETY("安全", Icons.Rounded.HealthAndSafety),
     SLEEP("睡眠", Icons.Rounded.Bedtime), PRIVACY("隐私", Icons.Rounded.PrivacyTip),
-    ME("画像", Icons.Rounded.Person),
+    ME("我的", Icons.Rounded.Person),
     ASSISTANT("问小安", Icons.Rounded.AutoAwesome),
 }
 
@@ -172,11 +201,12 @@ private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.
 
 @Composable
 private fun PageBody(content: @Composable ColumnScope.() -> Unit) {
+    val horizontalPadding = if (LocalConfiguration.current.screenWidthDp < 380) 16.dp else 20.dp
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(
-            start = 20.dp,
+            start = horizontalPadding,
             top = 22.dp,
-            end = 20.dp,
+            end = horizontalPadding,
             bottom = 92.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -187,6 +217,8 @@ private fun PageBody(content: @Composable ColumnScope.() -> Unit) {
 @Composable
 private fun HomePage(state: UiState, vm: MainViewModel, onSafety: () -> Unit, onSleep: () -> Unit, onAssistant: () -> Unit) {
     val context = LocalContext.current
+    val compactLayout = LocalConfiguration.current.screenWidthDp < 380
+    val horizontalPadding = if (compactLayout) 16.dp else 20.dp
     val preferences = remember(context) { context.getSharedPreferences("home_layout", Context.MODE_PRIVATE) }
     val storedOrder = remember {
         preferences.getString("module_order", null)
@@ -214,14 +246,13 @@ private fun HomePage(state: UiState, vm: MainViewModel, onSafety: () -> Unit, on
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, top = 22.dp, end = 20.dp, bottom = 92.dp),
+        contentPadding = PaddingValues(start = horizontalPadding, top = 22.dp, end = horizontalPadding, bottom = 92.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item(key = "home_header") {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(state.dashboard.greeting, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Ink)
-                    Text(state.dashboard.subtitle, color = Muted, fontSize = 17.sp)
                 }
                 FilledIconButton(onClick = vm::refresh, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Brand)) { Icon(Icons.Rounded.Refresh, "刷新") }
             }
@@ -230,11 +261,22 @@ private fun HomePage(state: UiState, vm: MainViewModel, onSafety: () -> Unit, on
         state.notice?.let { notice -> item(key = "home_notice") { NoticeBanner(notice) } }
         item(key = "assistant_primary") { HomeAssistantPanel(state, vm, onAssistant) }
         item(key = "module_hint") {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("生活模块", fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                Icon(Icons.Rounded.DragHandle, null, tint = Muted)
-                Spacer(Modifier.width(5.dp))
-                Text("长按卡片可调整顺序", color = Muted, fontSize = 14.sp)
+            if (compactLayout) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("生活模块", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.DragHandle, null, tint = Muted, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("长按卡片可调整顺序", color = Muted, fontSize = 14.sp)
+                    }
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("生活模块", fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Icon(Icons.Rounded.DragHandle, null, tint = Muted)
+                    Spacer(Modifier.width(5.dp))
+                    Text("长按卡片可调整顺序", color = Muted, fontSize = 14.sp)
+                }
             }
         }
         items(visibleModules, key = { "module_${it.storageKey}" }) { module ->
@@ -313,6 +355,7 @@ private fun HomeAssistantPanel(state: UiState, vm: MainViewModel, onAssistant: (
     val context = LocalContext.current
     var input by remember { mutableStateOf("") }
     val recentMessages = state.assistantMessages.takeLast(2)
+    val compactLayout = LocalConfiguration.current.screenWidthDp < 380
     val voiceLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
@@ -320,21 +363,51 @@ private fun HomeAssistantPanel(state: UiState, vm: MainViewModel, onAssistant: (
             ?.firstOrNull()
             ?.let { input = it }
     }
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            vm.toggleVoiceInput { input = it }
+        } else {
+            Toast.makeText(context, "请允许使用麦克风后再试", Toast.LENGTH_LONG).show()
+        }
+    }
     Card(
         shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF2F6F62)),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(if (compactLayout) 16.dp else 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 RoundIcon(Icons.Rounded.AutoAwesome, Color.White, Color.White.copy(alpha = .16f))
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("和小安聊一聊", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    Text("可以说说今天的感受，也可以问睡眠和居家安全", color = Color.White.copy(.82f), fontSize = 15.sp)
+                Spacer(Modifier.width(if (compactLayout) 8.dp else 12.dp))
+                Text(
+                    "和小安聊一聊",
+                    color = Color.White,
+                    fontSize = if (compactLayout) 20.sp else 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(6.dp))
+                TextButton(
+                    onClick = onAssistant,
+                    colors = ButtonDefaults.textButtonColors(
+                        containerColor = Color.White.copy(alpha = .18f),
+                        contentColor = Color.White,
+                    ),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    Text("完整对话", fontSize = if (compactLayout) 14.sp else 15.sp, maxLines = 1)
                 }
-                TextButton(onClick = onAssistant) { Text("完整对话", color = Color.White) }
             }
+            Text(
+                "可以说说今天的感受，也可以问睡眠和居家安全",
+                color = Color.White.copy(.82f),
+                fontSize = 15.sp,
+                lineHeight = 22.sp,
+            )
             if (recentMessages.isEmpty()) {
                 Surface(color = Color.White.copy(alpha = .12f), shape = RoundedCornerShape(18.dp)) {
                     Text(
@@ -355,7 +428,7 @@ private fun HomeAssistantPanel(state: UiState, vm: MainViewModel, onAssistant: (
                             .align(if (message.role == "user") Alignment.End else Alignment.Start),
                     ) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                            Text(message.content, fontSize = 17.sp, lineHeight = 25.sp)
+                            Text(elderFacingPlainText(message.content), fontSize = 17.sp, lineHeight = 25.sp)
                             if (message.role != "user") {
                                 message.actions.filter { it.status == "pending" }.forEach { action ->
                                     Button(
@@ -377,48 +450,47 @@ private fun HomeAssistantPanel(state: UiState, vm: MainViewModel, onAssistant: (
                 }
             }
             state.assistantError?.let { Text(it, color = Color(0xFFFFD7D0), fontSize = 14.sp) }
-            Row(verticalAlignment = Alignment.Bottom) {
-                FilledIconButton(
-                    onClick = {
-                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-                            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出您想和小安聊的内容")
-                        }
-                        try {
-                            voiceLauncher.launch(intent)
-                        } catch (_: ActivityNotFoundException) {
-                            Toast.makeText(context, "这部设备暂时无法使用语音输入", Toast.LENGTH_LONG).show()
-                        }
-                    },
-                    modifier = Modifier.size(56.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(.16f), contentColor = Color.White),
-                ) { Icon(Icons.Rounded.Mic, "语音输入") }
-                Spacer(Modifier.width(9.dp))
-                OutlinedTextField(
+            if (
+                state.whiteNoisePlaying || state.whiteNoisePaused || state.whiteNoiseLoading ||
+                    state.whiteNoiseError != null
+            ) {
+                WhiteNoisePlayerCard(state, vm)
+            }
+            ResponsiveAssistantComposer(
                     value = input,
                     onValueChange = { input = it },
-                    placeholder = { Text("和小安说点什么") },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 3,
-                    shape = RoundedCornerShape(19.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color.White,
-                        unfocusedContainerColor = Color.White,
-                        focusedBorderColor = Color.White,
-                        unfocusedBorderColor = Color.White,
-                    ),
-                )
-                Spacer(Modifier.width(9.dp))
-                FilledIconButton(
-                    onClick = {
+                    onVoice = {
+                        if (state.voiceRecording) {
+                            vm.toggleVoiceInput { input = it }
+                        } else {
+                            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+                                putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出您想和小安聊的内容")
+                            }
+                            if (intent.resolveActivity(context.packageManager) != null) {
+                                voiceLauncher.launch(intent)
+                            } else if (
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                                PackageManager.PERMISSION_GRANTED
+                            ) {
+                                vm.toggleVoiceInput { input = it }
+                            } else {
+                                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    },
+                    onSend = {
                         vm.sendAssistantMessage(input)
                         input = ""
                     },
-                    enabled = input.isNotBlank() && !state.assistantLoading,
-                    modifier = Modifier.size(56.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Warm, contentColor = Color.White),
-                ) { Icon(Icons.Rounded.Send, "发送") }
+                    sendEnabled = input.isNotBlank() && !state.assistantLoading,
+                    voiceRecording = state.voiceRecording,
+                    voiceTranscribing = state.voiceTranscribing,
+                    onDarkBackground = true,
+            )
+            state.voiceError?.let {
+                Text(it, color = Color(0xFFFFD7D0), fontSize = 14.sp, lineHeight = 20.sp)
             }
         }
     }
@@ -462,7 +534,9 @@ private fun ProactiveCareCard(event: ProactiveEvent, onClick: () -> Unit) {
                 Icon(Icons.Rounded.ChevronRight, "回应小安")
             }
             Text(event.message, fontSize = 17.sp, lineHeight = 25.sp, maxLines = 3)
-            Text("为什么询问：${event.reason}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+            if (!BuildConfig.DEMO_MODE) {
+                Text("为什么询问：${event.reason}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+            }
         }
     }
 }
@@ -503,10 +577,31 @@ private fun SleepHomeCard(card: SleepCard, onClick: () -> Unit) {
 @Composable
 private fun ContactCard(name: String, onClick: () -> Unit) {
     Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
-        Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            RoundIcon(Icons.Rounded.FamilyRestroom, Color(0xFFE56F5B), Color(0xFFFFE9E4)); Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) { Text("需要陪伴或帮忙？", fontSize = 20.sp, fontWeight = FontWeight.Bold); Text("告诉${name}联系您", color = Muted) }
-            Button(onClick = onClick, shape = RoundedCornerShape(16.dp)) { Text("联系", fontSize = 17.sp) }
+        val compactLayout = LocalConfiguration.current.screenWidthDp < 380
+        if (compactLayout) {
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RoundIcon(Icons.Rounded.FamilyRestroom, Color(0xFFE56F5B), Color(0xFFFFE9E4))
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("需要陪伴或帮忙？", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("告诉${name}联系您", color = Muted)
+                    }
+                }
+                Button(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                    Text("联系${name}", fontSize = 17.sp)
+                }
+            }
+        } else {
+            Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                RoundIcon(Icons.Rounded.FamilyRestroom, Color(0xFFE56F5B), Color(0xFFFFE9E4))
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("需要陪伴或帮忙？", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text("告诉${name}联系您", color = Muted)
+                }
+                Button(onClick = onClick, shape = RoundedCornerShape(16.dp)) { Text("联系", fontSize = 17.sp) }
+            }
         }
     }
 }
@@ -519,48 +614,52 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
     }
     PageBody {
         PageTitle("居家安全", "留意每天常走的地方", Icons.Rounded.HealthAndSafety)
-        CameraStreamCard(state, vm)
-        SafetyCheckCard(state, vm)
-        if (state.dashboard.safety.taskId == null) {
-            EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
+        if (BuildConfig.DEMO_MODE) {
+            EmbeddedSafetyFlow(vm)
         } else {
-            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
-                Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text(
-                        if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
-                        color = Color(0xFFC73A31),
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                    Text(state.dashboard.safety.detail, fontSize = 18.sp, lineHeight = 28.sp)
-                    Button(
-                        onClick = vm::confirmSafetyCleaned,
-                        enabled = !state.safetyAnalysisLoading && state.safetyBaseline.ready &&
-                            !state.safetyBaselineNeedsRefresh && !state.cameraPaused,
-                        modifier = Modifier.fillMaxWidth().height(54.dp),
-                        shape = RoundedCornerShape(16.dp),
-                    ) {
-                        if (state.safetyAnalysisLoading) {
-                            CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
-                            Spacer(Modifier.width(9.dp))
-                            Text("正在重新检查…", fontSize = 18.sp)
-                        } else {
-                            Icon(Icons.Rounded.Done, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("我已整理好", fontSize = 18.sp)
+            CameraStreamCard(state, vm)
+            SafetyCheckCard(state, vm)
+            if (state.dashboard.safety.taskId == null) {
+                EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
+            } else {
+                Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
+                    Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text(
+                            if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
+                            color = Color(0xFFC73A31),
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                        Text(state.dashboard.safety.detail, fontSize = 18.sp, lineHeight = 28.sp)
+                        Button(
+                            onClick = vm::confirmSafetyCleaned,
+                            enabled = !state.safetyAnalysisLoading && state.safetyBaseline.ready &&
+                                !state.safetyBaselineNeedsRefresh && !state.cameraPaused,
+                            modifier = Modifier.fillMaxWidth().height(54.dp),
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            if (state.safetyAnalysisLoading) {
+                                CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                                Spacer(Modifier.width(9.dp))
+                                Text("正在重新检查…", fontSize = 18.sp)
+                            } else {
+                                Icon(Icons.Rounded.Done, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("我已整理好", fontSize = 18.sp)
+                            }
                         }
+                        OutlinedButton(
+                            onClick = { vm.taskAction("need_help"); dial(context, state.dashboard.contactPhone) },
+                            enabled = !state.safetyAnalysisLoading,
+                            modifier = Modifier.fillMaxWidth().height(54.dp),
+                            shape = RoundedCornerShape(16.dp),
+                        ) { Text("联系家人", fontSize = 18.sp) }
+                        TextButton(
+                            onClick = { vm.taskAction("later") },
+                            enabled = !state.safetyAnalysisLoading,
+                            modifier = Modifier.align(Alignment.CenterHorizontally),
+                        ) { Text("30分钟后提醒") }
                     }
-                    OutlinedButton(
-                        onClick = { vm.taskAction("need_help"); dial(context, state.dashboard.contactPhone) },
-                        enabled = !state.safetyAnalysisLoading,
-                        modifier = Modifier.fillMaxWidth().height(54.dp),
-                        shape = RoundedCornerShape(16.dp),
-                    ) { Text("联系家人", fontSize = 18.sp) }
-                    TextButton(
-                        onClick = { vm.taskAction("later") },
-                        enabled = !state.safetyAnalysisLoading,
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                    ) { Text("30分钟后提醒") }
                 }
             }
         }
@@ -579,21 +678,13 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
 @Composable
 private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
     val result = state.safetyAnalysis
-    val resultColor = when (result?.riskLevel) {
-        "high", "medium" -> Color(0xFFFFE6E3)
-        "low" -> Color(0xFFFFF3D6)
-        else -> BrandSoft
-    }
+    val resultColor = safetyRiskBackground(result?.riskLevel)
     Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = resultColor)) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 RoundIcon(
                     Icons.Rounded.Search,
-                    when (result?.riskLevel) {
-                        "high", "medium" -> Color(0xFFC73A31)
-                        "low" -> Color(0xFFB77900)
-                        else -> Brand
-                    },
+                    safetyRiskForeground(result?.riskLevel),
                 )
                 Spacer(Modifier.width(13.dp))
                 Column(Modifier.weight(1f)) {
@@ -610,18 +701,10 @@ private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
             }
             result?.let {
                 HorizontalDivider(color = Ink.copy(alpha = .08f))
-                val statusColor = when (it.riskLevel) {
-                    "high", "medium" -> Color(0xFFC73A31)
-                    "low" -> Color(0xFF9A6700)
-                    else -> Brand
-                }
+                val statusColor = safetyRiskForeground(it.riskLevel)
                 Surface(color = statusColor.copy(alpha = .12f), shape = RoundedCornerShape(50)) {
                     Text(
-                        when (it.riskLevel) {
-                            "high", "medium" -> "需要整改"
-                            "low" -> "潜在风险"
-                            else -> "通道安全"
-                        },
+                        safetyRiskLabel(it.riskLevel),
                         color = statusColor,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
@@ -820,7 +903,6 @@ private fun CameraPlayer(
             )
         }
         CameraMoveHandle(onMove = vm::setCameraMoving)
-        Text("实时画面默认静音，离开本页后自动关闭", color = Muted, fontSize = 14.sp)
         playbackError?.let { Text(it, color = Color(0xFFB44336)) }
         moveError?.let { Text(it, color = Color(0xFFB44336)) }
     }
@@ -1069,9 +1151,19 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                VitalCard(Modifier.weight(1f), Icons.Rounded.Air, "平均呼吸", sleep.respiratoryRate?.let { formatOne(it) } ?: "—", "次/分")
-                VitalCard(Modifier.weight(1f), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
+            RecentSleepTrendCard(state.sleepHistory)
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                if (maxWidth < 350.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.Air, "平均呼吸", sleep.respiratoryRate?.let { formatOne(it) } ?: "—", "次/分")
+                        VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
+                    }
+                } else {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        VitalCard(Modifier.weight(1f), Icons.Rounded.Air, "平均呼吸", sleep.respiratoryRate?.let { formatOne(it) } ?: "—", "次/分")
+                        VitalCard(Modifier.weight(1f), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
+                    }
+                }
             }
             VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.DirectionsWalk, "夜间离床", sleep.bedExitCount?.toString() ?: "—", "次")
             sleep.baselineMessage?.let { message ->
@@ -1384,12 +1476,13 @@ private fun MePage(state: UiState, vm: MainViewModel, onStartOnboarding: () -> U
         Text("我的设备", fontSize = 21.sp, fontWeight = FontWeight.Bold)
         DeviceRow(Icons.Rounded.Videocam, "萤石 C6c", deviceText(state.devices.cameraConfigured, state.devices.cameraOnline))
         DeviceRow(Icons.Rounded.Bed, "无感睡眠助手", if (state.devices.sleepConfigured) "已连接" else "等待连接")
+        if (BuildConfig.DEMO_MODE) {
         Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("睡眠演示数据", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Text("近期睡眠记录", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (state.devices.sleepDemoActive) "当前睡眠报告使用本地演示数据"
-                    else "当前未使用演示睡眠数据",
+                    if (state.devices.sleepDemoActive) "最近7晚记录已加载"
+                    else "还没有加载近期记录",
                     color = Muted,
                 )
                 OutlinedButton(
@@ -1401,7 +1494,7 @@ private fun MePage(state: UiState, vm: MainViewModel, onStartOnboarding: () -> U
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(14.dp),
                 ) {
-                    Text(if (state.devices.sleepDemoActive) "一键清除演示数据" else "导入8晚演示数据")
+                    Text(if (state.devices.sleepDemoActive) "清除近期记录" else "加载最近7晚")
                 }
                 if (state.devices.sleepDemoActive) {
                     OutlinedButton(
@@ -1418,14 +1511,15 @@ private fun MePage(state: UiState, vm: MainViewModel, onStartOnboarding: () -> U
                     ) {
                         Text(
                             if (state.dashboard.sleep.nightAwakening.state == "waiting") {
-                                "演示一次起夜关注"
+                                "开启一次起夜关注"
                             } else {
-                                "重置起夜关注演示"
+                                "重置起夜关注"
                             },
                         )
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1443,8 +1537,7 @@ private fun PrivacyPage(state: UiState, vm: MainViewModel) {
                     RoundIcon(Icons.Rounded.AutoAwesome, Brand, Color.White)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("小安是大脑，设备是四肢", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                        Text("小安统一理解您的话，再调用获得授权的设备完成操作。", color = Muted, lineHeight = 23.sp)
+                        Text("我是小安，我是您的居家小助手", fontSize = 21.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 Text("目前可控制：通道检查、睡眠提醒和主动关怀。新增设备接入后也会在这里说明。", fontSize = 15.sp, lineHeight = 23.sp)
@@ -1454,7 +1547,7 @@ private fun PrivacyPage(state: UiState, vm: MainViewModel) {
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
                 Text("设备控制权限", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                Text("只需选择一次。小安执行您明确说出的设备指令；您可以随时修改或撤回。", color = Muted, lineHeight = 23.sp)
+                Text("只需选择一次，让小安控制您家里的设备；您可以随时修改或撤回。", color = Muted, lineHeight = 23.sp)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ChoiceButton(
                         "允许控制",
@@ -1496,7 +1589,7 @@ private fun PrivacyPage(state: UiState, vm: MainViewModel) {
             !state.sleepPaused,
         ) { vm.setSleepPaused(!it) }
 
-        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        /*Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("风险证据保存时间", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Text("用于解释为什么产生安全提醒，到期后按服务清理规则删除。", color = Muted)
@@ -1510,7 +1603,7 @@ private fun PrivacyPage(state: UiState, vm: MainViewModel) {
                     }
                 }
             }
-        }
+        }*/
     }
 }
 
@@ -1534,14 +1627,85 @@ private fun ChoiceButton(
     }
 }
 
-@Composable private fun PageTitle(title: String, subtitle: String, icon: ImageVector) { Row(verticalAlignment = Alignment.CenterVertically) { RoundIcon(icon, Brand); Spacer(Modifier.width(14.dp)); Column { Text(title, fontSize = 29.sp, fontWeight = FontWeight.Bold); Text(subtitle, color = Muted, fontSize = 16.sp) } } }
+@Composable
+internal fun ResponsiveAssistantComposer(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onVoice: () -> Unit,
+    onSend: () -> Unit,
+    sendEnabled: Boolean,
+    voiceRecording: Boolean = false,
+    voiceTranscribing: Boolean = false,
+    onDarkBackground: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        placeholder = {
+            Text(
+                when {
+                    voiceRecording -> "正在录音，再点一次完成"
+                    voiceTranscribing -> "正在识别您说的话…"
+                    else -> "和小安说点什么"
+                },
+                maxLines = 1,
+            )
+        },
+        modifier = modifier.fillMaxWidth(),
+        minLines = 1,
+        maxLines = 3,
+        shape = RoundedCornerShape(20.dp),
+        leadingIcon = {
+            IconButton(
+                onClick = onVoice,
+                enabled = !voiceTranscribing,
+                modifier = Modifier.size(48.dp),
+            ) {
+                if (voiceTranscribing) {
+                    CircularProgressIndicator(Modifier.size(23.dp), color = Brand, strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        if (voiceRecording) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                        if (voiceRecording) "结束录音" else "语音输入",
+                        tint = if (voiceRecording) Color(0xFFC73A31) else Brand,
+                        modifier = Modifier.size(27.dp),
+                    )
+                }
+            }
+        },
+        trailingIcon = {
+            FilledIconButton(
+                onClick = onSend,
+                enabled = sendEnabled,
+                modifier = Modifier.size(44.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = if (onDarkBackground) Warm else Brand,
+                    contentColor = Color.White,
+                ),
+            ) { Icon(Icons.Rounded.Send, "发送") }
+        },
+        colors = if (onDarkBackground) {
+            OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = Color.White,
+                unfocusedContainerColor = Color.White,
+                focusedBorderColor = Color.White,
+                unfocusedBorderColor = Color.White,
+            )
+        } else {
+            OutlinedTextFieldDefaults.colors()
+        },
+    )
+}
+
+@Composable private fun PageTitle(title: String, subtitle: String, icon: ImageVector) { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { RoundIcon(icon, Brand); Spacer(Modifier.width(14.dp)); Column(Modifier.weight(1f)) { Text(title, fontSize = 29.sp, fontWeight = FontWeight.Bold); Text(subtitle, color = Muted, fontSize = 16.sp, lineHeight = 22.sp) } } }
 @Composable private fun RoundIcon(icon: ImageVector, color: Color, background: Color = Color.White) { Box(Modifier.size(52.dp).clip(CircleShape).background(background), contentAlignment = Alignment.Center) { Icon(icon, null, tint = color, modifier = Modifier.size(28.dp)) } }
 @Composable private fun VitalMini(label: String, value: String) { Column { Text(label, color = Muted, fontSize = 14.sp); Text(value, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) } }
 @Composable private fun VitalCard(modifier: Modifier, icon: ImageVector, label: String, value: String, unit: String) { Card(modifier, shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) { Icon(icon, null, tint = Brand); Text(label, color = Muted); Row(verticalAlignment = Alignment.Bottom) { Text(value, fontSize = 29.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.width(4.dp)); Text(unit, color = Muted, modifier = Modifier.padding(bottom = 4.dp)) } } } }
 @Composable private fun EmptyCard(icon: ImageVector, title: String, detail: String) { Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.fillMaxWidth().padding(26.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) { RoundIcon(icon, Brand, BrandSoft); Text(title, fontSize = 22.sp, fontWeight = FontWeight.Bold); Text(detail, color = Muted, lineHeight = 25.sp) } } }
 @Composable private fun DeviceRow(icon: ImageVector, title: String, status: String) { Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.fillMaxWidth().padding(17.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = Brand, modifier = Modifier.size(28.dp)); Spacer(Modifier.width(14.dp)); Text(title, Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.SemiBold); Text(status, color = Muted) } } }
 @Composable private fun SettingsSwitch(title: String, detail: String, checked: Boolean, onChecked: (Boolean) -> Unit) { Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) { Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold); Text(detail, color = Muted) }; Switch(checked, onChecked, colors = SwitchDefaults.colors(checkedTrackColor = Brand)) } } }
-@Composable private fun ConnectionBanner(text: String) { Surface(color = Color(0xFFFFE5E1), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.WifiOff, null, tint = Color(0xFFB44336)); Spacer(Modifier.width(10.dp)); Text(text, color = Color(0xFF7D2E25)) } } }
+@Composable private fun ConnectionBanner(text: String) { val message = if (text.contains(Regex("https?://|(?:\\d{1,3}\\.){3}\\d{1,3}"))) "家庭服务暂时未连接，请稍后重试" else text; Surface(color = Color(0xFFFFE5E1), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.WifiOff, null, tint = Color(0xFFB44336)); Spacer(Modifier.width(10.dp)); Text(message, color = Color(0xFF7D2E25), modifier = Modifier.weight(1f), lineHeight = 23.sp) } } }
 @Composable private fun NoticeBanner(text: String) { Surface(color = BrandSoft, shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.CheckCircle, null, tint = Brand); Spacer(Modifier.width(10.dp)); Text(text, color = Color(0xFF205B4B)) } } }
 private fun deviceText(configured: Boolean, online: Boolean?): String = when { !configured -> "等待连接"; online == true -> "已连接"; online == false -> "离线"; else -> "已配置" }
 private fun formatOne(value: Double): String = if (value % 1.0 == 0.0) value.toInt().toString() else String.format("%.1f", value)

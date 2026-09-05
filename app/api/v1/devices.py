@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -5,7 +7,9 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
+from app.care.rules import create_sleep_change_event
 from app.dependencies import (
     EzvizDep,
     LlmDep,
@@ -15,12 +19,18 @@ from app.dependencies import (
     VisionSafetyDep,
 )
 from app.devices.ezviz import EzvizError
-from app.sleep.demo import DEMO_DATASET_ID, import_demo_dataset
+from app.sleep.demo import DEMO_DATASET_ID, demo_records
 from app.sleep.night_awakening import assess_night_awakening
 from app.vision.service import BaselineMissingError, UnsafeBaselineError, VisionSafetyError
 from app.vision.workflow import record_safety_result
 
 router = APIRouter(prefix="/devices", tags=["devices"])
+
+
+class SafetyFrameIn(BaseModel):
+    image_base64: str = Field(min_length=16, max_length=16 * 1024 * 1024)
+    baseline_image_base64: str | None = Field(default=None, min_length=16, max_length=16 * 1024 * 1024)
+    preview: bool = False
 
 
 @router.get("")
@@ -47,6 +57,11 @@ async def device_status(
             "demo_active": bool(
                 latest_sleep and latest_sleep.get("source") == "demo_generated"
             ),
+            "demo_dataset_id": (
+                latest_sleep.get("demo_dataset_id")
+                if latest_sleep and latest_sleep.get("source") == "demo_generated"
+                else None
+            ),
             "sync": store.latest_sleep_sync(),
         },
     }
@@ -58,7 +73,13 @@ async def load_sleep_demo(
 ) -> dict[str, Any]:
     if settings.app_env == "production":
         raise HTTPException(403, "生产环境不能导入演示睡眠数据")
-    records = import_demo_dataset(store)
+    store.delete_demo_sleep()
+    records = []
+    event = None
+    for payload in demo_records():
+        record = store.add_sleep(payload)
+        records.append(record)
+        event = create_sleep_change_event(store, record) or event
     latest = records[-1]
     copy, source = await llm.analyze_sleep(latest, records[-2::-1][:7])
     store.add_llm_output(
@@ -69,6 +90,7 @@ async def load_sleep_demo(
         "dataset_id": DEMO_DATASET_ID,
         "imported": len(records),
         "latest": latest,
+        "proactive_event": event,
     }
 
 
@@ -96,7 +118,7 @@ def activate_demo_night_awakening(
         or latest.get("source") != "demo_generated"
         or latest.get("demo_dataset_id") != DEMO_DATASET_ID
     ):
-        raise HTTPException(409, "请先导入8晚演示睡眠数据")
+        raise HTTPException(409, "请先导入睡眠演示数据")
     assessment = assess_night_awakening(
         history,
         detected_at=datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -228,6 +250,7 @@ def latest_c6c_safety(store: StoreDep) -> dict[str, Any]:
         "low": ("通道可以通行", "保持观察即可"),
         "medium": ("通道需要整理", "请将影响通行的物品移到通道外"),
         "high": ("通道通行受阻", "请尽快清理通道"),
+        "blocked": ("通道阻塞", "请清理后再通行"),
         "insufficient": ("暂时看不清通道", "请调整光线后重新检查"),
     }.get(risk_level, ("等待下一次检查", ""))
     task = store.latest_task()
@@ -299,4 +322,55 @@ async def analyze_c6c_safety(
     except VisionSafetyError as exc:
         raise HTTPException(502, str(exc)) from exc
 
+    return record_safety_result(store, settings, result)
+
+
+@router.post("/c6c/safety/analyze-frame")
+async def analyze_c6c_safety_frame(
+    payload: SafetyFrameIn,
+    store: StoreDep,
+    settings: SettingsDep,
+    vision: VisionSafetyDep,
+) -> dict[str, Any]:
+    if store.settings().get("camera_paused") == "true":
+        raise HTTPException(409, "摄像头已暂停，请先恢复检查")
+    try:
+        image = base64.b64decode(payload.image_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(422, "当前画面数据无效") from exc
+    if len(image) > 12 * 1024 * 1024:
+        raise HTTPException(413, "单张图片不能超过12MB")
+    baseline_image: bytes | None = None
+    if payload.baseline_image_base64 is not None:
+        if not payload.preview:
+            raise HTTPException(422, "临时基准图只能用于演示预览")
+        try:
+            baseline_image = base64.b64decode(payload.baseline_image_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(422, "临时基准画面数据无效") from exc
+        if len(baseline_image) > 12 * 1024 * 1024:
+            raise HTTPException(413, "单张基准图片不能超过12MB")
+    try:
+        if baseline_image is None:
+            result = await vision.analyze_image(image, "image/jpeg")
+        else:
+            result = await vision.analyze_image(
+                image,
+                "image/jpeg",
+                baseline_image=baseline_image,
+            )
+    except BaselineMissingError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except VisionSafetyError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    if payload.preview:
+        return {
+            **result,
+            "notification_required": False,
+            "speech_auto_play": False,
+            "recheck": False,
+            "check_id": None,
+            "task_id": None,
+        }
     return record_safety_result(store, settings, result)

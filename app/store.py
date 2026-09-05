@@ -479,6 +479,10 @@ class ProductStore:
             ids = [row["id"] for row in rows]
             if ids:
                 db.executemany(
+                    "DELETE FROM proactive_event WHERE source='demo_generated' AND source_ref=?",
+                    ((item,) for item in ids),
+                )
+                db.executemany(
                     "DELETE FROM llm_output WHERE kind='sleep' AND entity_id=?",
                     ((item,) for item in ids),
                 )

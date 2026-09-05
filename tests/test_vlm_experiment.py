@@ -7,6 +7,18 @@ from typing import Any
 MODULE = runpy.run_path(str(Path(__file__).parents[1] / "scripts" / "test-vlm-safety.py"))
 
 
+def test_experiment_prompt_uses_hazard_avoidability_principle() -> None:
+    prompt = MODULE["prompt_text"](
+        {"image_path": "camera/toy-car.jpg"},
+        {"image_width": 1920, "image_height": 1080, "walkway_polygon": [[0, 0], [1, 1]]},
+    )
+
+    assert "物理致害潜势—情境可规避性" in prompt
+    assert "可察觉性和可避让性" in prompt
+    assert "单个低矮小物品" in prompt
+    assert "不等于行走者能提前看见" in prompt
+
+
 def test_request_contains_baseline_current_and_schema() -> None:
     label = {"image_path": "c6c01/current.jpg"}
     walkway = {"image_width": 768, "image_height": 432, "walkway_polygon": [[1, 2], [3, 4], [5, 6]]}

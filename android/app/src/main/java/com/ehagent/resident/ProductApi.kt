@@ -1,5 +1,6 @@
 package com.ehagent.resident
 
+import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -69,6 +70,21 @@ data class ProactiveEvent(
     val status: String,
     val priority: String,
 )
+data class SleepHistoryNight(
+    val reportDate: String,
+    val sleepStart: String,
+    val sleepEnd: String,
+    val durationMinutes: Int,
+    val awakeMinutes: Int?,
+    val lightSleepMinutes: Int?,
+    val deepSleepMinutes: Int?,
+    val remSleepMinutes: Int?,
+    val sleepScore: Double?,
+    val respiratoryRate: Double?,
+    val heartRate: Double?,
+    val bedExitCount: Int?,
+    val awakeAfterReturnMinutes: Int?,
+)
 data class ProfileFact(
     val id: String,
     val factType: String,
@@ -91,6 +107,7 @@ data class DeviceState(
     val sleepConfigured: Boolean = false,
     val sleepLastReportAt: String? = null,
     val sleepDemoActive: Boolean = false,
+    val sleepDemoDatasetId: String? = null,
 )
 data class CameraSdkSession(
     val appKey: String,
@@ -110,6 +127,7 @@ data class SafetyAnalysis(
     val reason: String,
     val checkedAt: String,
     val checkId: String? = null,
+    val taskId: String? = null,
     val hazardRegions: List<HazardRegion> = emptyList(),
     val notificationRequired: Boolean = false,
     val speechAutoPlay: Boolean = false,
@@ -129,14 +147,15 @@ data class AssistantAction(
     val label: String,
     val status: String,
     val kind: String = "",
+    val interventionId: String? = null,
     val followUpMessage: AssistantMessage? = null,
+    val autoStart: Boolean = false,
 )
 data class AssistantMessage(
     val id: String,
     val role: String,
     val content: String,
     val sources: List<AssistantSource> = emptyList(),
-    val contextUsed: List<String> = emptyList(),
     val actions: List<AssistantAction> = emptyList(),
 )
 data class AssistantChatResult(
@@ -147,6 +166,12 @@ data class AssistantChatResult(
 data class AssistantStartResult(
     val conversationId: String,
     val assistantMessage: AssistantMessage,
+)
+data class WhiteNoiseTrack(
+    val id: String,
+    val name: String,
+    val audioUrl: String,
+    val hasAlternative: Boolean,
 )
 
 class ProductApi(private val baseUrl: String) {
@@ -231,6 +256,7 @@ class ProductApi(private val baseUrl: String) {
             sleepConfigured = sleep.optBoolean("configured"),
             sleepLastReportAt = sleep.optionalString("last_report_at"),
             sleepDemoActive = sleep.optBoolean("demo_active"),
+            sleepDemoDatasetId = sleep.optionalString("demo_dataset_id"),
         )
     }
 
@@ -278,6 +304,26 @@ class ProductApi(private val baseUrl: String) {
         return root.toSafetyAnalysis()
     }
 
+    suspend fun analyzeSafetyFrame(
+        image: ByteArray,
+        preview: Boolean = false,
+        baselineImage: ByteArray? = null,
+    ): SafetyAnalysis {
+        val body = JSONObject()
+            .put("image_base64", Base64.encodeToString(image, Base64.NO_WRAP))
+            .put("preview", preview)
+        baselineImage?.let {
+            body.put("baseline_image_base64", Base64.encodeToString(it, Base64.NO_WRAP))
+        }
+        val root = request(
+            "/api/v1/devices/c6c/safety/analyze-frame",
+            method = "POST",
+            body = body,
+            readTimeoutMillis = 120_000,
+        )
+        return root.toSafetyAnalysis()
+    }
+
     suspend fun latestSafetyAnalysis(): SafetyAnalysis? {
         val root = request("/api/v1/devices/c6c/safety/latest")
         val analysis = root.optJSONObject("analysis") ?: return null
@@ -296,17 +342,22 @@ class ProductApi(private val baseUrl: String) {
                 y2 = region.optDouble("y2", 0.0).toFloat().coerceIn(0f, 1000f),
             )
         }?.filter { it.x2 - it.x1 >= 10f && it.y2 - it.y1 >= 10f }.orEmpty()
+        val checkId = optionalString("check_id")
+        val riskLevel = assessment.getString("risk_level")
         return SafetyAnalysis(
-            riskLevel = assessment.getString("risk_level"),
+            riskLevel = riskLevel,
             headline = assessment.getString("headline"),
             actionText = assessment.getString("action_text"),
             reason = getString("reason"),
             checkedAt = getString("checked_at"),
-            checkId = optionalString("check_id"),
+            checkId = checkId,
+            taskId = optionalString("task_id"),
             hazardRegions = regions,
             notificationRequired = optBoolean("notification_required"),
             speechAutoPlay = optBoolean("speech_auto_play"),
-            speechUrl = optionalString("speech_url"),
+            speechUrl = optionalString("speech_url") ?: checkId
+                ?.takeIf { riskLevel in setOf("medium", "high") }
+                ?.let { "/api/v1/devices/c6c/safety/$it/speech" },
         )
     }
 
@@ -353,6 +404,26 @@ class ProductApi(private val baseUrl: String) {
         readTimeoutMillis = 60_000,
     )
     suspend fun loadSleepDemo() = request("/api/v1/devices/sleep/demo", method = "POST")
+    suspend fun sleepHistory(): List<SleepHistoryNight> {
+        val items = request("/api/v1/resident/sleep").optJSONArray("history") ?: return emptyList()
+        return items.mapObjects { item ->
+            SleepHistoryNight(
+                reportDate = item.optString("report_date"),
+                sleepStart = item.optString("sleep_start"),
+                sleepEnd = item.optString("sleep_end"),
+                durationMinutes = item.optInt("duration_minutes"),
+                awakeMinutes = item.optionalInt("awake_minutes"),
+                lightSleepMinutes = item.optionalInt("light_sleep_minutes"),
+                deepSleepMinutes = item.optionalInt("deep_sleep_minutes"),
+                remSleepMinutes = item.optionalInt("rem_sleep_minutes"),
+                sleepScore = item.optionalDouble("sleep_score"),
+                respiratoryRate = item.optionalDouble("respiratory_rate"),
+                heartRate = item.optionalDouble("heart_rate"),
+                bedExitCount = item.optionalInt("bed_exit_count"),
+                awakeAfterReturnMinutes = item.optionalInt("awake_after_bed_return_minutes"),
+            )
+        }.take(7)
+    }
     suspend fun clearSleepDemo() = request("/api/v1/devices/sleep/demo", method = "DELETE")
     suspend fun activateNightAwakeningDemo() = request(
         "/api/v1/devices/sleep/demo/night-awakening",
@@ -379,6 +450,31 @@ class ProductApi(private val baseUrl: String) {
         )
     }
 
+    suspend fun transcribeVoice(audio: ByteArray): String = withContext(Dispatchers.IO) {
+        val connection = URL(
+            baseUrl.trimEnd('/') + "/api/v1/assistant/transcribe",
+        ).openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 90_000
+        connection.doOutput = true
+        connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Content-Type", "audio/mp4")
+        connection.setFixedLengthStreamingMode(audio.size)
+        connection.outputStream.use { it.write(audio) }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val responseText = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+        connection.disconnect()
+        val payload = JSONObject(responseText.ifBlank { "{}" })
+        if (code !in 200..299) {
+            throw IllegalStateException(payload.optString("detail", "语音暂时没有识别出来"))
+        }
+        payload.optString("text").trim().ifBlank {
+            throw IllegalStateException("没有听清，请靠近手机再说一次")
+        }
+    }
+
     suspend fun assistantConversation(conversationId: String): List<AssistantMessage> {
         return request("/api/v1/assistant/conversations/$conversationId")
             .getJSONArray("messages").mapObjects { it.toAssistantMessage() }
@@ -390,6 +486,42 @@ class ProductApi(private val baseUrl: String) {
             readTimeoutMillis = 120_000,
         )
             .toAssistantAction()
+    }
+
+    suspend fun randomWhiteNoise(excludeId: String? = null): WhiteNoiseTrack {
+        val query = excludeId?.let {
+            "?exclude=" + java.net.URLEncoder.encode(it, Charsets.UTF_8.name())
+        }.orEmpty()
+        val root = request("/api/v1/resident/care/white-noise/random$query")
+        val path = root.getString("audio_url")
+        return WhiteNoiseTrack(
+            id = root.getString("id"),
+            name = root.optString("name", "白噪音"),
+            audioUrl = if (path.startsWith("http://") || path.startsWith("https://")) {
+                path
+            } else {
+                baseUrl.trimEnd('/') + "/" + path.trimStart('/')
+            },
+            hasAlternative = root.optBoolean("has_alternative"),
+        )
+    }
+
+    suspend fun whiteNoiseTracks(): List<WhiteNoiseTrack> {
+        val items = request("/api/v1/resident/care/white-noise/tracks")
+            .getJSONArray("items")
+        return items.mapObjects { item ->
+            val path = item.getString("audio_url")
+            WhiteNoiseTrack(
+                id = item.getString("id"),
+                name = item.optString("name", "白噪音"),
+                audioUrl = if (path.startsWith("http://") || path.startsWith("https://")) {
+                    path
+                } else {
+                    baseUrl.trimEnd('/') + "/" + path.trimStart('/')
+                },
+                hasAlternative = items.length() > 1,
+            )
+        }
     }
 
     suspend fun startProactiveEvent(eventId: String): AssistantStartResult {
@@ -430,7 +562,6 @@ private fun JSONObject.toAssistantMessage(): AssistantMessage = AssistantMessage
     sources = optJSONArray("sources")?.mapObjects {
         AssistantSource(it.optString("title", "查看来源"), it.getString("url"))
     }.orEmpty(),
-    contextUsed = optJSONArray("context_used")?.mapStrings().orEmpty(),
     actions = optJSONArray("actions")?.mapObjects { it.toAssistantAction() }.orEmpty(),
 )
 
@@ -474,7 +605,10 @@ private fun JSONObject.toAssistantAction(): AssistantAction = AssistantAction(
     label = getString("label"),
     status = getString("status"),
     kind = optString("kind"),
+    interventionId = optJSONObject("payload")?.optString("intervention_id")
+        ?.takeIf { it.isNotBlank() },
     followUpMessage = optJSONObject("follow_up_message")?.toAssistantMessage(),
+    autoStart = optJSONObject("payload")?.optBoolean("auto_start", false) ?: false,
 )
 
 private fun JSONObject.toProactiveEvent() = ProactiveEvent(

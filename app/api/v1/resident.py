@@ -15,7 +15,20 @@ def resident_sleep(record: dict[str, Any] | None) -> dict[str, Any] | None:
     if record is None:
         return None
     hidden = {"device_serial", "external_report_id"}
-    return {key: value for key, value in record.items() if key not in hidden}
+    result = {key: value for key, value in record.items() if key not in hidden}
+    awake_periods = [
+        stage for stage in record.get("stages", []) if stage.get("stage") == "awake"
+    ]
+    durations = []
+    for stage in awake_periods:
+        try:
+            start = datetime.fromisoformat(str(stage["start"]))
+            end = datetime.fromisoformat(str(stage["end"]))
+            durations.append(round((end - start).total_seconds() / 60))
+        except (KeyError, TypeError, ValueError):
+            continue
+    result["awake_after_bed_return_minutes"] = max(durations, default=None)
+    return result
 
 
 class TaskAction(BaseModel):

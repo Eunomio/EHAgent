@@ -55,11 +55,11 @@ def record_safety_result(
             explanation=reason,
             suggestion=action_text,
         )
-    elif risk_level in {"clear", "low"}:
+    elif risk_level in {"clear", "low", "blocked"}:
         if current_task:
             store.resolve_safety_task(current_task["id"])
         if recheck_task:
-            if risk_level == "clear":
+            if risk_level in {"clear", "blocked"}:
                 assessment.update({
                     "headline": "再次检查，通道已经畅通",
                     "action_text": "整理已经完成",

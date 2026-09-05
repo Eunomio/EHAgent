@@ -52,6 +52,8 @@ class VisionPrediction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     visibility: Literal["usable", "limited", "insufficient"]
+    event_type: Literal["clear", "passage_blocked", "fall_hazard", "insufficient"] | None = None
+    fall_risk_level: Literal["none", "low", "medium", "high", "unknown"] | None = None
     hazard_present: bool | None
     hazard_types: list[HazardType]
     position_zone: Literal["outside", "boundary", "inner_side", "center", "unknown"]
@@ -82,6 +84,29 @@ HAZARD_LABELS = {
 
 def reconcile_walkway_geometry(prediction: VisionPrediction) -> VisionPrediction:
     """Correct contradictory semantic fields using the model's own risk boxes."""
+
+    positive_trip_phrases = (
+        "存在绊倒风险",
+        "有绊倒风险",
+        "可能绊倒",
+        "容易绊倒",
+        "会绊倒",
+        "可能踩到",
+        "可能踢到",
+    )
+    negative_trip_phrases = (
+        "没有绊倒风险",
+        "无绊倒风险",
+        "不存在绊倒风险",
+        "不易绊倒",
+    )
+    if (
+        prediction.hazard_present is True
+        and prediction.trip_risk == "none"
+        and any(phrase in prediction.reason for phrase in positive_trip_phrases)
+        and not any(phrase in prediction.reason for phrase in negative_trip_phrases)
+    ):
+        prediction = prediction.model_copy(update={"trip_risk": "possible"})
 
     walkway_x1 = prediction.walkway_near_x1
     walkway_x2 = prediction.walkway_near_x2
@@ -164,6 +189,29 @@ def display_regions(prediction: VisionPrediction, risk: str) -> list[dict[str, A
 
 def derive_assessment(prediction: VisionPrediction) -> dict[str, str]:
     prediction = reconcile_walkway_geometry(prediction)
+    if prediction.event_type is not None:
+        if prediction.event_type == "passage_blocked":
+            risk = "blocked"
+        elif prediction.event_type == "insufficient":
+            risk = "insufficient"
+        elif prediction.event_type == "clear":
+            risk = "clear"
+        elif prediction.fall_risk_level in {"low", "medium", "high"}:
+            risk = prediction.fall_risk_level
+        else:
+            risk = "insufficient"
+        headline, action_text = {
+            "clear": ("未检测到风险", "保持通道整洁"),
+            "low": ("发现低风险绊倒隐患", "建议方便时移走相关物品"),
+            "medium": ("发现中风险绊倒隐患", "请将相关物品移出行走路线"),
+            "high": ("发现高风险绊倒隐患", "请尽快移走落脚区域内的物品"),
+            "blocked": ("通道阻塞", "请清理后再通行"),
+            "insufficient": ("画面不清楚", "请调整光线或画面后重新检查"),
+        }[risk]
+        if risk in {"low", "medium", "high"}:
+            action_text = remediation_advice(prediction, risk)
+        return {"risk_level": risk, "headline": headline, "action_text": action_text}
+
     near_field_crossing = any(
         region.y2 >= 850
         and region.x2 - region.x1 >= 250
@@ -193,15 +241,11 @@ def derive_assessment(prediction: VisionPrediction) -> dict[str, str]:
             prediction.walkway_occupation == "quarter_to_half"
             and prediction.position_zone == "center"
         )
-        or (
-            prediction.trip_risk == "possible"
-            and prediction.position_zone == "center"
-        )
+        or prediction.trip_risk == "possible"
     ):
         risk = "medium"
     elif (
         prediction.passage_effect == "narrowed"
-        or prediction.trip_risk == "possible"
         or prediction.visibility == "limited"
     ):
         risk = "low"
@@ -326,19 +370,29 @@ class VisionSafetyService:
         return await self.analyze_image(current_image, content_type)
 
     async def analyze_image(
-        self, current_image: bytes, content_type: str = "image/jpeg"
+        self,
+        current_image: bytes,
+        content_type: str = "image/jpeg",
+        baseline_image: bytes | None = None,
     ) -> dict[str, Any]:
         async with self.analysis_lock:
-            return await self._analyze_image(current_image, content_type)
+            return await self._analyze_image(current_image, content_type, baseline_image)
 
     async def _analyze_image(
-        self, current_image: bytes, content_type: str
+        self,
+        current_image: bytes,
+        content_type: str,
+        baseline_image: bytes | None = None,
     ) -> dict[str, Any]:
         if not self.configured:
             raise VisionSafetyError("安全检查服务尚未配置")
-        baseline_path = self.root / "baseline.jpg"
-        if not self.baseline_status()["ready"] or not baseline_path.is_file():
-            raise BaselineMissingError("请先设置当前视角的通道基准")
+        if baseline_image is None:
+            baseline_path = self.root / "baseline.jpg"
+            if not self.baseline_status()["ready"] or not baseline_path.is_file():
+                raise BaselineMissingError("请先设置当前视角的通道基准")
+            baseline_image = baseline_path.read_bytes()
+        else:
+            self._validate_image(baseline_image, "image/jpeg")
         self._validate_image(current_image, content_type)
         checked_at = datetime.now().astimezone().isoformat(timespec="seconds")
         self.root.mkdir(parents=True, exist_ok=True)
@@ -347,7 +401,7 @@ class VisionSafetyService:
         prediction = await self._predict(
             current_image,
             content_type,
-            baseline_path.read_bytes(),
+            baseline_image,
         )
         assessment = derive_assessment(prediction)
         return {
@@ -476,8 +530,35 @@ class VisionSafetyService:
             "请从基准图识别供人通行的走道边界，比较当前截图中新增或移动的物品。"
             "允许摄像头存在轻微角度变化，不要因为透视或边界的小幅偏移判断为通行风险。"
             "判断目标是人能否沿原有走道正常、安全通行，不要求画面中完全没有物品。"
+            "首先区分事件类型，禁止把通道阻塞与跌倒隐患混为同一等级。"
+            "如果体积大或数量多的杂物形成明显、连续、可提前发现的阻断区域，正常行走者会在进入"
+            "杂物区前停下、绕行或放弃通行，event_type必须为passage_blocked，fall_risk_level必须为none；"
+            "此时只提醒通道阻塞，不输出高跌倒风险，也不假设老人会无视阻塞强行通过。"
+            "只有当通道整体看起来仍可正常通行，使人可能保持原路线和步态继续前进，但行走或落脚"
+            "区域存在不容易及时发现的障碍物时，event_type才是fall_hazard，并判断low、medium或high。"
+            "拐角后、门后、墙角遮挡处、转身后的第一落脚点，以及低矮、细小、零散、与地面接近的"
+            "物品应重点检查；发现距离短、来不及调整脚步时可以判high，即使只有一两个且占用很小。"
+            "禁止使用‘玩具越多风险越高’或‘物品越小风险越低’作为判断逻辑。"
+            "没有阻塞或跌倒隐患时event_type为clear、fall_risk_level为none；画面无法可靠判断时"
+            "event_type为insufficient、fall_risk_level为unknown。最终结论必须由上述图像语义直接得出。"
+            "采用‘物理致害潜势—情境可规避性’原则：先判断物品是否进入实际行走轨迹、"
+            "落脚区、转弯区、门口或门槛，再判断从可能接近方向能否提前察觉，以及发现后是否"
+            "仍有足够反应距离和安全避让空间。情境可规避性同时包含可察觉性和可避让性。"
+            "杂物数量、物品尺寸、画面面积或视觉杂乱程度都不能单独决定风险等级。"
+            "大量醒目物品可能容易提前察觉，但若压缩通道、妨碍扶靠或迫使绕行，仍属于风险；"
+            "单个低矮小物品若位于拐角后、遮挡处、转身后的第一落脚点或主要行走轨迹，"
+            "可能因发现较晚、反应距离短而具有更高绊倒风险，不能因数量少或体积小而降级。"
+            "图像中能看见物品不等于行走者能提前看见；必须结合接近方向、遮挡关系、地面反差、"
+            "低矮程度和首次可见距离判断。醒目性只能降低未察觉可能，不能抵消通道占用或失衡后果。"
+            "单张图无法可靠判断接近方向、深度、尺寸或遮挡关系时，应在对应字段使用unknown，"
+            "必要时使用insufficient，不得假设老人的视力、步态、认知状态或实际路线。"
             "通行宽度和跌倒风险是两个独立结论：即使旁边仍有空间通过，只要脚可能碰到物品、"
             "需要绕脚或跨越、物品伸入门槛或实际落脚区域，trip_risk也必须是possible或obvious。"
+            "玩具车、积木、球、拖鞋等低矮小物品散落在地面时，要重点判断脚是否可能踩到或踢到；"
+            "只要它们位于常用行走路线、门口、门槛或落脚区域，就属于绊倒风险，至少返回possible，"
+            "不能因为剩余通行宽度足够、物品较小或靠近一侧而返回none。"
+            "只要trip_risk为possible或obvious，本次画面就需要提醒整理，不能得出无需整理的结论。"
+            "reason与trip_risk必须一致；reason中写明存在、有、可能或容易绊倒时，trip_risk禁止为none。"
             "同时不要仅因为物品靠近通道边界就推断跌倒风险。家庭通道边缘存在固定置物很常见；"
             "若物品没有伸入常用落脚路线、不需要改变脚步、可以自然直行通过，trip_risk应为none。"
             "物品出现在画面中不等于需要整理；放在走道外或紧靠边缘，并且不缩窄有效通行宽度、"
@@ -503,22 +584,28 @@ class VisionSafetyService:
             "risk_level只能是low、medium、high；不影响通行的边缘置物不要添加风险框。"
             "walkway_near_x1和walkway_near_x2表示基准图中画面近处实际可通行开口的左右边界，"
             "同样使用0到1000归一化横坐标；无法可靠判断时返回null。"
-            "如果无法可靠定位，hazard_regions返回空数组，禁止编造坐标。必须返回十二个字段："
-            "visibility、hazard_present、hazard_types、position_zone、walkway_occupation、"
+            "如果无法可靠定位，hazard_regions返回空数组，禁止编造坐标。必须返回十四个字段："
+            "visibility、event_type、fall_risk_level、hazard_present、hazard_types、position_zone、walkway_occupation、"
             "walkway_length_occupation、passage_effect、trip_risk、reason、hazard_regions、"
             "walkway_near_x1、walkway_near_x2。前九个字段必须出现，hazard_regions无法定位时"
-            "也要返回空数组。"
+            "也要返回空数组。event_type和fall_risk_level必须出现。"
             "输出示例："
-            '{"visibility":"usable","hazard_present":false,"hazard_types":[],'
+            '{"visibility":"usable","event_type":"clear","fall_risk_level":"none","hazard_present":false,"hazard_types":[],'
             '"position_zone":"outside","walkway_occupation":"none",'
             '"walkway_length_occupation":"none","passage_effect":"none",'
             '"trip_risk":"none","reason":"当前通道与安全基准图一致，未见新增障碍物。",'
             '"hazard_regions":[],"walkway_near_x1":400,"walkway_near_x2":850}'
             "边缘纸箱且不影响通行的输出示例："
-            '{"visibility":"usable","hazard_present":true,"hazard_types":["box"],'
+            '{"visibility":"usable","event_type":"clear","fall_risk_level":"none","hazard_present":true,"hazard_types":["box"],'
             '"position_zone":"inner_side","walkway_occupation":"under_quarter",'
             '"walkway_length_occupation":"under_quarter","passage_effect":"none",'
             '"trip_risk":"none","reason":"纸箱位于走道边缘，剩余宽度足够直行通过。",'
+            '"hazard_regions":[],"walkway_near_x1":400,"walkway_near_x2":850}'
+            "地面散落玩具车的输出示例："
+            '{"visibility":"usable","event_type":"fall_hazard","fall_risk_level":"high","hazard_present":true,"hazard_types":["other_obstacle"],'
+            '"position_zone":"inner_side","walkway_occupation":"under_quarter",'
+            '"walkway_length_occupation":"under_quarter","passage_effect":"none",'
+            '"trip_risk":"possible","reason":"玩具车散落在地面落脚区域，经过时可能踩到或绊倒。",'
             '"hazard_regions":[],"walkway_near_x1":400,"walkway_near_x2":850}'
         )
         if baseline_validation:
@@ -533,6 +620,12 @@ class VisionSafetyService:
                 "上一次输出存在字段缺失或类型错误。请重新检查图片，完整返回上述十个字段。"
                 "占用比例必须使用指定英文枚举，不能使用0、0.0、百分数或其他数字。"
             )
+        schema = VisionPrediction.model_json_schema()
+        schema["required"] = list(dict.fromkeys([
+            *schema.get("required", []),
+            "event_type",
+            "fall_risk_level",
+        ]))
         return {
             "model": self.model,
             "messages": [
@@ -560,7 +653,7 @@ class VisionSafetyService:
             "max_tokens": self.settings.llm_max_output_tokens,
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": "walkway_safety", "schema": VisionPrediction.model_json_schema()},
+                "json_schema": {"name": "walkway_safety", "schema": schema},
             },
         }
 

@@ -20,7 +20,7 @@ INTERVENTIONS: dict[str, dict[str, Any]] = {
     "white_noise_30min": {
         "id": "white_noise_30min",
         "title": "30分钟睡前白噪音",
-        "summary": "以较低音量播放，30分钟后自动停止。",
+        "summary": "从审核素材库随机选择并以较低音量播放，30分钟后自动停止，可随时切换。",
         "duration_minutes": 30,
         "kind": "audio",
         "content": ["请保持音量轻柔，不要遮住警报、门铃或家人的声音。"],
@@ -56,10 +56,39 @@ INTERVENTIONS: dict[str, dict[str, Any]] = {
 }
 
 
+AVAILABLE_INTERVENTIONS = frozenset({"white_noise_30min"})
+
+
+def unsupported_message(intervention_id: str) -> str:
+    names = {
+        "relaxation_5min": "带您做放松练习",
+        "sleep_preparation": "带您逐项完成睡前准备清单",
+        "worry_sorting": "带您做烦恼梳理练习",
+    }
+    name = names.get(intervention_id, "提供这项功能")
+    return f"小安现在还不能{name}。您可以让我播放助眠声音。"
+
+
+def unsupported_request(message: str) -> str | None:
+    # Everyday emotion alone is not a request to start an exercise. Urgent
+    # symptoms continue through the existing urgent-response path.
+    if any(word in message for word in ("胸痛", "呼吸困难", "失去意识", "跌倒")):
+        return None
+    requests = {
+        "relaxation_5min": ("放松练习", "呼吸练习", "呼吸训练", "带我放松", "冥想"),
+        "sleep_preparation": ("睡前准备清单",),
+        "worry_sorting": ("烦恼梳理", "担心的事理一理"),
+    }
+    for resource_id, phrases in requests.items():
+        if any(phrase in message for phrase in phrases):
+            return unsupported_message(resource_id)
+    return None
+
+
 def intervention_list() -> list[dict[str, Any]]:
-    return [dict(item) for item in INTERVENTIONS.values()]
+    return [dict(item) for key, item in INTERVENTIONS.items() if key in AVAILABLE_INTERVENTIONS]
 
 
 def intervention(intervention_id: str) -> dict[str, Any] | None:
-    item = INTERVENTIONS.get(intervention_id)
+    item = INTERVENTIONS.get(intervention_id) if intervention_id in AVAILABLE_INTERVENTIONS else None
     return dict(item) if item else None

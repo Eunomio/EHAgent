@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from io import BytesIO
 from pathlib import Path
@@ -19,6 +20,58 @@ from app.vision.service import (
     reconcile_walkway_geometry,
 )
 from app.vision.workflow import record_safety_result
+
+
+def test_runtime_prompt_uses_hazard_avoidability_principle(tmp_path: Path) -> None:
+    service = VisionSafetyService(
+        Settings(
+            evidence_root=tmp_path,
+            vlm_enabled=True,
+            vlm_api_key="test-key",
+            vlm_model="test-model",
+            vlm_api_base="https://chat.test/v1",
+        )
+    )
+    body = service._request_body("data:image/jpeg;base64,current", "data:image/jpeg;base64,baseline")
+    prompt = body["messages"][1]["content"][-1]["text"]
+
+    assert "物理致害潜势—情境可规避性" in prompt
+    assert "可察觉性和可避让性" in prompt
+    assert "不能因数量少或体积小而降级" in prompt
+    assert "不等于行走者能提前看见" in prompt
+    assert "event_type必须为passage_blocked" in prompt
+    assert "不输出高跌倒风险" in prompt
+    required = body["response_format"]["json_schema"]["schema"]["required"]
+    assert "event_type" in required
+    assert "fall_risk_level" in required
+
+
+def test_vlm_event_type_controls_final_card_without_obstruction_upgrade() -> None:
+    blocked = VisionPrediction(
+        visibility="usable",
+        event_type="passage_blocked",
+        fall_risk_level="none",
+        hazard_present=True,
+        hazard_types=["other_obstacle"],
+        position_zone="center",
+        walkway_occupation="over_half",
+        walkway_length_occupation="quarter_to_half",
+        passage_effect="blocked",
+        trip_risk="none",
+        reason="大量醒目玩具形成明显阻断，进入前即可发现。",
+    )
+    hidden_car = blocked.model_copy(update={
+        "event_type": "fall_hazard",
+        "fall_risk_level": "high",
+        "walkway_occupation": "under_quarter",
+        "walkway_length_occupation": "under_quarter",
+        "passage_effect": "none",
+        "trip_risk": "obvious",
+        "reason": "低矮玩具车位于拐角后的第一落脚点。",
+    })
+
+    assert derive_assessment(blocked)["risk_level"] == "blocked"
+    assert derive_assessment(hidden_car)["risk_level"] == "high"
 
 
 class FakeCamera:
@@ -75,7 +128,7 @@ def test_box_at_walkway_edge_is_clear_when_people_can_walk_straight() -> None:
     assert assessment["action_text"] == "当前无需整理"
 
 
-def test_uncertain_trip_risk_at_edge_does_not_require_cleanup() -> None:
+def test_possible_trip_risk_always_requires_cleanup() -> None:
     prediction = VisionPrediction(
         visibility="usable",
         hazard_present=True,
@@ -85,11 +138,31 @@ def test_uncertain_trip_risk_at_edge_does_not_require_cleanup() -> None:
         walkway_length_occupation="under_quarter",
         passage_effect="none",
         trip_risk="possible",
-        reason="纸箱靠近走道边缘，没有观察到需要绕脚或跨越。",
+        reason="地面物品靠近日常落脚区域，可能绊倒。",
     )
     assessment = derive_assessment(prediction)
-    assert assessment["risk_level"] == "low"
-    assert assessment["headline"] == "通道可以通行"
+    assert assessment["risk_level"] == "medium"
+    assert assessment["headline"] == "通道需要整理"
+
+
+def test_trip_risk_in_reason_cannot_produce_clear_result() -> None:
+    prediction = VisionPrediction(
+        visibility="usable",
+        hazard_present=True,
+        hazard_types=["other_obstacle"],
+        position_zone="inner_side",
+        walkway_occupation="under_quarter",
+        walkway_length_occupation="under_quarter",
+        passage_effect="none",
+        trip_risk="none",
+        reason="玩具车散落在地面落脚区域，有绊倒风险。",
+    )
+
+    assessment = derive_assessment(prediction)
+
+    assert assessment["risk_level"] == "medium"
+    assert assessment["headline"] == "通道需要整理"
+    assert "物品移到通道外" in assessment["action_text"]
 
 
 def test_baseline_and_analysis_use_two_images(tmp_path: Path) -> None:
@@ -178,6 +251,106 @@ def test_safety_endpoints_save_baseline_and_create_task(client) -> None:
     assert analysis.json()["task_id"]
     task = client.get("/api/v1/resident/safety").json()["task"]
     assert task["title"] == "通道需要整理"
+
+
+def test_safety_frame_uses_existing_vision_analysis(client) -> None:
+    received: dict[str, object] = {}
+
+    async def fake_analyze_image(image: bytes, content_type: str) -> dict[str, object]:
+        received.update({"image": image, "content_type": content_type})
+        return {
+            "checked_at": "2026-08-21T18:02:00+08:00",
+            "prediction": {},
+            "assessment": {
+                "risk_level": "medium",
+                "headline": "通道需要整理",
+                "action_text": "请将影响通行的物品移到通道外",
+            },
+            "reason": "画面中的物品伸入了日常行走区域。",
+            "hazard_regions": [],
+            "evidence_path": "frame.jpg",
+        }
+
+    client.app.state.vision_safety.analyze_image = fake_analyze_image
+    image = b"jpeg-frame" * 20
+    response = client.post(
+        "/api/v1/devices/c6c/safety/analyze-frame",
+        json={"image_base64": base64.b64encode(image).decode("ascii")},
+    )
+
+    assert response.status_code == 200
+    assert received == {"image": image, "content_type": "image/jpeg"}
+    assert response.json()["reason"] == "画面中的物品伸入了日常行走区域。"
+    assert response.json()["task_id"]
+
+
+def test_safety_frame_preview_does_not_create_product_records(client) -> None:
+    received: dict[str, object] = {}
+
+    async def fake_analyze_image(
+        image: bytes,
+        content_type: str,
+        baseline_image: bytes | None = None,
+    ) -> dict[str, object]:
+        received.update({
+            "image": image,
+            "content_type": content_type,
+            "baseline_image": baseline_image,
+        })
+        return {
+            "checked_at": "2026-09-03T18:02:00+08:00",
+            "prediction": {},
+            "assessment": {
+                "risk_level": "high",
+                "headline": "通道通行受阻",
+                "action_text": "请及时整理通道",
+            },
+            "reason": "演示画面中的玩具影响通行。",
+            "hazard_regions": [],
+            "evidence_path": "preview-frame.jpg",
+        }
+
+    client.app.state.vision_safety.analyze_image = fake_analyze_image
+    image = b"demo-frame" * 20
+    baseline = b"demo-baseline" * 20
+    response = client.post(
+        "/api/v1/devices/c6c/safety/analyze-frame",
+        json={
+            "image_base64": base64.b64encode(image).decode("ascii"),
+            "baseline_image_base64": base64.b64encode(baseline).decode("ascii"),
+            "preview": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["assessment"]["risk_level"] == "high"
+    assert body["check_id"] is None
+    assert body["task_id"] is None
+    assert body["notification_required"] is False
+    assert received == {
+        "image": image,
+        "content_type": "image/jpeg",
+        "baseline_image": baseline,
+    }
+    assert client.app.state.store.recent_checks() == []
+    assert client.app.state.store.latest_task(include_deferred=True) is None
+    assert client.app.state.store.proactive_events() == []
+
+
+def test_temporary_baseline_is_rejected_outside_preview(client) -> None:
+    image = base64.b64encode(b"demo-frame" * 20).decode("ascii")
+    response = client.post(
+        "/api/v1/devices/c6c/safety/analyze-frame",
+        json={
+            "image_base64": image,
+            "baseline_image_base64": image,
+            "preview": False,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "临时基准图只能用于演示预览"
 
 
 def test_analysis_retries_when_platform_omits_required_fields(tmp_path: Path) -> None:

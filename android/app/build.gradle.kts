@@ -12,8 +12,22 @@ android {
         applicationId = "com.ehagent.resident"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.15.0"
+        versionCode = 23
+        versionName = "0.17.0"
+    }
+
+    flavorDimensions += "content"
+    productFlavors {
+        create("demo") {
+            dimension = "content"
+            applicationIdSuffix = ".demo"
+            versionNameSuffix = "-demo"
+            buildConfigField("boolean", "DEMO_MODE", "true")
+        }
+        create("actual") {
+            dimension = "content"
+            buildConfigField("boolean", "DEMO_MODE", "false")
+        }
     }
 
     buildTypes {
