@@ -1010,13 +1010,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess { updated ->
                 val isWhiteNoise = updated.kind == "start_intervention" &&
                     (updated.interventionId ?: selectedAction?.interventionId) == "white_noise_30min"
-                val notice = when (updated.kind) {
+                val notice = if (updated.status == "unsupported") {
+                    "小安现在还不能提供这项功能。您可以让我播放助眠声音。"
+                } else when (updated.kind) {
                     "contact_family" -> "已请家人联系您"
                     "remember_profile_fact" -> "小安已经按您的同意记下"
                     "reject_profile_fact" -> "好的，小安不会记下这件事"
                     "start_intervention" -> if (
                         isWhiteNoise
-                    ) "正在为您选择白噪音" else "支持内容已经开始"
+                    ) "正在为您选择白噪音" else "小安现在还不能提供这项功能"
                     "defer_event" -> "将在30分钟后再提醒"
                     "pause_proactive_care" -> "主动关怀已暂停"
                     "device_control_allow" -> "已允许小安控制已连接设备"

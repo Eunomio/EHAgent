@@ -8,7 +8,7 @@ from app.assistant.profile_onboarding import (
     PROFILE_ONBOARDING_STEPS,
     onboarding_step,
 )
-from app.care.interventions import intervention
+from app.care.interventions import intervention, unsupported_message, unsupported_request
 from app.core.config import Settings
 from app.llm.service import LlmService
 from app.store import ProductStore
@@ -38,6 +38,17 @@ class AssistantService:
         user_message = self.store.add_assistant_message(
             conversation["id"], "user", message, "resident"
         )
+        unavailable_reply = unsupported_request(message)
+        if unavailable_reply:
+            assistant_message = self.store.add_assistant_message(
+                conversation["id"], "assistant", unavailable_reply, "capability"
+            )
+            assistant_message["actions"] = []
+            return {
+                "conversation_id": conversation["id"],
+                "user_message": user_message,
+                "assistant_message": assistant_message,
+            }
         active_event = self.store.proactive_event_for_conversation(conversation["id"])
         if active_event and active_event["status"] in {"engaged", "pending", "later"}:
             self.store.update_proactive_event(
@@ -170,6 +181,19 @@ class AssistantService:
         action = self.store.get_assistant_action(action_id)
         if action is None:
             return None
+        # Old conversations can still contain prototype actions, including
+        # ones incorrectly marked completed by earlier versions.
+        if action["kind"] == "start_intervention" and not intervention(
+            action["payload"].get("intervention_id", "")
+        ):
+            updated = self.store.update_assistant_action(action_id, "unsupported")
+            if updated is not None:
+                updated["follow_up_message"] = self.store.add_assistant_message(
+                    action["conversation_id"], "assistant",
+                    unsupported_message(action["payload"].get("intervention_id", "")),
+                    "capability",
+                )
+            return updated
         if action["status"] == "completed":
             return action
         follow_up_message: dict[str, Any] | None = None
@@ -518,8 +542,6 @@ class AssistantService:
         intervention_id = None
         if white_noise_action in {"offer", "play_now"}:
             intervention_id = "white_noise_30min"
-        elif any(word in message for word in ("紧张", "担心", "后怕", "放松")):
-            intervention_id = "relaxation_5min"
         if intervention_id:
             resource = intervention(intervention_id)
             if resource:

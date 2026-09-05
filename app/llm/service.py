@@ -268,6 +268,10 @@ class LlmService:
                 "可以回答一般生活问题，也可以使用提供的当前生活信息。只引用其中真实存在的数据，不补充缺失数值。"
                 "涉及天气、新闻、政策、交通、诈骗案例等会变化的信息时使用联网搜索。"
                 "不要展示模型、接口或内部处理过程。不要把健康数据解释成诊断。"
+                "辅助功能目前只提供助眠声音播放、暂停、继续、切换和停止。"
+                "放松练习、呼吸训练、冥想、睡前准备清单和烦恼梳理练习尚未提供。"
+                "用户要求使用未提供的功能时，简短说明‘小安现在还不能提供这项功能’，"
+                "再说明可以播放助眠声音；不要说已经启动或完成，也不要让用户稍后重试。"
                 "如果用户描述胸痛、呼吸困难、失去意识或正在跌倒等紧急情况，先建议立即呼叫急救并联系身边的人。"
                 "除上述紧急情况外，老人谈到睡眠或情绪困扰时，先简短表示理解，再优先提供一项低负担、可立即尝试的自助支持，"
                 "并询问老人是否愿意。起夜后难以再次入睡时，优先询问是否播放低音量白噪音；不要声称已经播放，"
@@ -323,7 +327,7 @@ class LlmService:
         fallback = WhiteNoiseDecision(action="none")
         # Offline suggestions never authorize automatic playback.
         if not self.configured and any(word in message for word in (
-            "睡不着", "再次入睡", "想听白噪音", "播放白噪音",
+            "睡不着", "再次入睡", "想听白噪音", "播放白噪音", "播放助眠声音", "放点助眠声音",
         )) and not any(word in message for word in ("不要", "不想", "不喜欢", "今晚", "以后再")):
             fallback = WhiteNoiseDecision(action="offer")
         decision, _ = await self._generate(
@@ -424,6 +428,10 @@ class LlmService:
             return str(tool_result["summary"])
         sleep = context.get("latest_sleep")
         safety = context.get("open_safety_task")
+        if any(word in message for word in (
+            "想听白噪音", "播放白噪音", "播放助眠声音", "放点助眠声音",
+        )) and not any(word in message for word in ("不要", "不想", "不喜欢", "以后再")):
+            return "可以。点一下下方的播放按钮，就能听助眠声音。您可以随时暂停或停止。"
         trouble_sleep_phrases = (
             "睡不着", "不好睡", "难入睡", "再次入睡", "再睡着", "睡不回去",
         )

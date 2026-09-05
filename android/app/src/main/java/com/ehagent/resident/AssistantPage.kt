@@ -269,7 +269,10 @@ private fun AssistantBubble(
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(elderFacingPlainText(message.content), fontSize = 18.sp, lineHeight = 28.sp)
                 message.sources.forEach { source -> SourceLink(source) }
-                message.actions.filter { it.status != "dismissed" }.forEach { action ->
+                message.actions.filter {
+                    it.status != "dismissed" &&
+                        (it.kind != "start_intervention" || it.interventionId == "white_noise_30min")
+                }.forEach { action ->
                     Button(
                         onClick = { onConfirm(action.id) },
                         enabled = action.status == "pending",
