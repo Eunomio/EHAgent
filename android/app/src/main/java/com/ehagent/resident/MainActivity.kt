@@ -617,11 +617,22 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
         if (state.dashboard.safety.taskId == null) {
             EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
         } else {
-            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
+            val riskLevel = state.safetyAnalysis?.riskLevel
+            val riskColor = safetyRiskForeground(riskLevel)
+            val reminderTitle = if (riskLevel == null) {
+                "待处理提醒"
+            } else {
+                safetyRiskLabel(riskLevel) +
+                    if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "提醒"
+            }
+            Card(
+                shape = RoundedCornerShape(26.dp),
+                colors = CardDefaults.cardColors(containerColor = safetyRiskBackground(riskLevel)),
+            ) {
                 Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(
-                        if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
-                        color = Color(0xFFC73A31),
+                        reminderTitle,
+                        color = riskColor,
                         fontWeight = FontWeight.Bold,
                     )
                     Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
