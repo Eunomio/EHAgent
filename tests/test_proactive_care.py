@@ -123,6 +123,56 @@ def test_sleep_event_requires_two_consecutive_changed_nights(client) -> None:
     assert "连续两晚" in event["reason"]
 
 
+def test_sudden_return_to_sleep_delay_triggers_after_first_changed_night(client) -> None:
+    store = client.app.state.store
+    base = datetime(2026, 8, 1, 6, 30, tzinfo=timezone(timedelta(hours=8)))
+
+    def add_night(index: int, awake_after_return: int) -> dict:
+        end = base + timedelta(days=index)
+        start = end - timedelta(minutes=465)
+        awake_start = end - timedelta(hours=4)
+        return store.add_sleep({
+            "external_report_id": f"return-delay-{index}",
+            "device_serial": "SLEEP001",
+            "report_date": end.date().isoformat(),
+            "timezone": "Asia/Shanghai",
+            "sleep_start": start.isoformat(),
+            "sleep_end": end.isoformat(),
+            "duration_minutes": 430,
+            "respiratory_rate": 14.2,
+            "heart_rate": 61.0,
+            "bed_exit_count": 1,
+            "bed_exit_status": "available",
+            "quality": "good",
+            "data_status": "final",
+            "source": "ezviz_sleep_assistant",
+            "measured_at": end.isoformat(),
+            "samples": [],
+            "stages": [{
+                "start": awake_start.isoformat(),
+                "end": (awake_start + timedelta(minutes=awake_after_return)).isoformat(),
+                "stage": "awake",
+            }],
+        })
+
+    for index, minutes in enumerate((12, 14, 11, 15, 10, 13, 12)):
+        add_night(index, minutes)
+    changed = add_night(7, 68)
+    event = create_sleep_change_event(store, changed)
+
+    assert event is not None
+    assert event["priority"] == "high"
+    assert event["context"]["script_id"] == "sleep_return_delay_v1"
+    assert event["context"]["awake_after_return_minutes"] == 68
+    assert event["context"]["baseline_nights"] == 7
+
+    still_changed = add_night(8, 63)
+    repeated = create_sleep_change_event(store, still_changed)
+    assert repeated is not None
+    assert repeated["source_ref"] == still_changed["id"]
+    assert repeated["context"]["awake_after_return_minutes"] == 63
+
+
 def test_proactive_pause_blocks_new_normal_events(client) -> None:
     client.put("/api/v1/resident/settings", json={"proactive_care_paused": True})
     created = client.app.state.store.create_proactive_event(

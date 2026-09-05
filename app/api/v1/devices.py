@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from app.care.rules import create_sleep_change_event
 from app.dependencies import (
     EzvizDep,
     LlmDep,
@@ -18,7 +19,7 @@ from app.dependencies import (
     VisionSafetyDep,
 )
 from app.devices.ezviz import EzvizError
-from app.sleep.demo import DEMO_DATASET_ID, import_demo_dataset
+from app.sleep.demo import DEMO_DATASET_ID, demo_records
 from app.sleep.night_awakening import assess_night_awakening
 from app.vision.service import BaselineMissingError, UnsafeBaselineError, VisionSafetyError
 from app.vision.workflow import record_safety_result
@@ -28,6 +29,7 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 class SafetyFrameIn(BaseModel):
     image_base64: str = Field(min_length=16, max_length=16 * 1024 * 1024)
+    baseline_image_base64: str | None = Field(default=None, min_length=16, max_length=16 * 1024 * 1024)
     preview: bool = False
 
 
@@ -71,21 +73,17 @@ async def load_sleep_demo(
 ) -> dict[str, Any]:
     if settings.app_env == "production":
         raise HTTPException(403, "生产环境不能导入演示睡眠数据")
-    records = import_demo_dataset(store)
+    store.delete_demo_sleep()
+    records = []
+    event = None
+    for payload in demo_records():
+        record = store.add_sleep(payload)
+        records.append(record)
+        event = create_sleep_change_event(store, record) or event
     latest = records[-1]
     copy, source = await llm.analyze_sleep(latest, records[-2::-1][:7])
     store.add_llm_output(
         "sleep", latest["id"], copy.model_dump(), source, llm.model_name
-    )
-    event = store.create_proactive_event(
-        event_type="sleep_change",
-        title="小安想了解一下您昨晚的休息",
-        message="我发现您昨天半夜醒了以后，过了好久才睡着，是发生什么事了吗？",
-        reason="睡眠助手发现第4、5晚起夜后约1小时才再次入睡",
-        source="demo_generated",
-        source_ref=str(records[4]["id"]),
-        priority="high",
-        context={"script_id": "sleep_return_delay_v1", "dataset_id": DEMO_DATASET_ID},
     )
     return {
         "success": True,
@@ -120,7 +118,7 @@ def activate_demo_night_awakening(
         or latest.get("source") != "demo_generated"
         or latest.get("demo_dataset_id") != DEMO_DATASET_ID
     ):
-        raise HTTPException(409, "请先导入7晚睡眠数据")
+        raise HTTPException(409, "请先导入睡眠演示数据")
     assessment = assess_night_awakening(
         history,
         detected_at=datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -252,6 +250,7 @@ def latest_c6c_safety(store: StoreDep) -> dict[str, Any]:
         "low": ("通道可以通行", "保持观察即可"),
         "medium": ("通道需要整理", "请将影响通行的物品移到通道外"),
         "high": ("通道通行受阻", "请尽快清理通道"),
+        "blocked": ("通道阻塞", "请清理后再通行"),
         "insufficient": ("暂时看不清通道", "请调整光线后重新检查"),
     }.get(risk_level, ("等待下一次检查", ""))
     task = store.latest_task()
@@ -341,8 +340,25 @@ async def analyze_c6c_safety_frame(
         raise HTTPException(422, "当前画面数据无效") from exc
     if len(image) > 12 * 1024 * 1024:
         raise HTTPException(413, "单张图片不能超过12MB")
+    baseline_image: bytes | None = None
+    if payload.baseline_image_base64 is not None:
+        if not payload.preview:
+            raise HTTPException(422, "临时基准图只能用于演示预览")
+        try:
+            baseline_image = base64.b64decode(payload.baseline_image_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(422, "临时基准画面数据无效") from exc
+        if len(baseline_image) > 12 * 1024 * 1024:
+            raise HTTPException(413, "单张基准图片不能超过12MB")
     try:
-        result = await vision.analyze_image(image, "image/jpeg")
+        if baseline_image is None:
+            result = await vision.analyze_image(image, "image/jpeg")
+        else:
+            result = await vision.analyze_image(
+                image,
+                "image/jpeg",
+                baseline_image=baseline_image,
+            )
     except BaselineMissingError as exc:
         raise HTTPException(409, str(exc)) from exc
     except VisionSafetyError as exc:

@@ -87,6 +87,34 @@ internal val Ink = Color(0xFF202622)
 internal val Muted = Color(0xFF66706A)
 internal val Canvas = Color(0xFFF6F7F3)
 
+internal fun safetyRiskLabel(riskLevel: String?): String = when (riskLevel) {
+    "clear" -> "未检测到风险"
+    "low" -> "低风险"
+    "medium" -> "中风险"
+    "high" -> "高风险"
+    "blocked" -> "通道阻塞"
+    "insufficient" -> "画面不清楚"
+    else -> "等待检查"
+}
+
+internal fun safetyRiskForeground(riskLevel: String?): Color = when (riskLevel) {
+    "clear" -> Color(0xFF237A57)
+    "low" -> Color(0xFF8A6A00)
+    "medium" -> Color(0xFFB85C00)
+    "high" -> Color(0xFFC73A31)
+    "blocked" -> Color(0xFF326A8F)
+    else -> Color(0xFF66706A)
+}
+
+internal fun safetyRiskBackground(riskLevel: String?): Color = when (riskLevel) {
+    "clear" -> Color(0xFFE4F3ED)
+    "low" -> Color(0xFFFFF6CC)
+    "medium" -> Color(0xFFFFE8CC)
+    "high" -> Color(0xFFFFE6E3)
+    "blocked" -> Color(0xFFE4F0F7)
+    else -> Color(0xFFF0F2F1)
+}
+
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -581,63 +609,59 @@ private fun ContactCard(name: String, onClick: () -> Unit) {
 @Composable
 private fun SafetyPage(state: UiState, vm: MainViewModel) {
     val context = LocalContext.current
-    var useRecordedWalkway by remember { mutableStateOf(BuildConfig.DEMO_MODE) }
     DisposableEffect(Unit) {
         onDispose { vm.stopCameraStream() }
     }
     PageBody {
         PageTitle("居家安全", "留意每天常走的地方", Icons.Rounded.HealthAndSafety)
         if (BuildConfig.DEMO_MODE) {
-            SafetyPictureSourceSwitch(useRecordedWalkway) { useRecordedWalkway = it }
-        }
-        if (BuildConfig.DEMO_MODE && useRecordedWalkway) {
             EmbeddedSafetyFlow(vm)
         } else {
-        CameraStreamCard(state, vm)
-        SafetyCheckCard(state, vm)
-        if (state.dashboard.safety.taskId == null) {
-            EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
-        } else {
-            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
-                Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text(
-                        if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
-                        color = Color(0xFFC73A31),
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                    Text(state.dashboard.safety.detail, fontSize = 18.sp, lineHeight = 28.sp)
-                    Button(
-                        onClick = vm::confirmSafetyCleaned,
-                        enabled = !state.safetyAnalysisLoading && state.safetyBaseline.ready &&
-                            !state.safetyBaselineNeedsRefresh && !state.cameraPaused,
-                        modifier = Modifier.fillMaxWidth().height(54.dp),
-                        shape = RoundedCornerShape(16.dp),
-                    ) {
-                        if (state.safetyAnalysisLoading) {
-                            CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
-                            Spacer(Modifier.width(9.dp))
-                            Text("正在重新检查…", fontSize = 18.sp)
-                        } else {
-                            Icon(Icons.Rounded.Done, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("我已整理好", fontSize = 18.sp)
+            CameraStreamCard(state, vm)
+            SafetyCheckCard(state, vm)
+            if (state.dashboard.safety.taskId == null) {
+                EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
+            } else {
+                Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
+                    Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text(
+                            if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
+                            color = Color(0xFFC73A31),
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                        Text(state.dashboard.safety.detail, fontSize = 18.sp, lineHeight = 28.sp)
+                        Button(
+                            onClick = vm::confirmSafetyCleaned,
+                            enabled = !state.safetyAnalysisLoading && state.safetyBaseline.ready &&
+                                !state.safetyBaselineNeedsRefresh && !state.cameraPaused,
+                            modifier = Modifier.fillMaxWidth().height(54.dp),
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            if (state.safetyAnalysisLoading) {
+                                CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                                Spacer(Modifier.width(9.dp))
+                                Text("正在重新检查…", fontSize = 18.sp)
+                            } else {
+                                Icon(Icons.Rounded.Done, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("我已整理好", fontSize = 18.sp)
+                            }
                         }
+                        OutlinedButton(
+                            onClick = { vm.taskAction("need_help"); dial(context, state.dashboard.contactPhone) },
+                            enabled = !state.safetyAnalysisLoading,
+                            modifier = Modifier.fillMaxWidth().height(54.dp),
+                            shape = RoundedCornerShape(16.dp),
+                        ) { Text("联系家人", fontSize = 18.sp) }
+                        TextButton(
+                            onClick = { vm.taskAction("later") },
+                            enabled = !state.safetyAnalysisLoading,
+                            modifier = Modifier.align(Alignment.CenterHorizontally),
+                        ) { Text("30分钟后提醒") }
                     }
-                    OutlinedButton(
-                        onClick = { vm.taskAction("need_help"); dial(context, state.dashboard.contactPhone) },
-                        enabled = !state.safetyAnalysisLoading,
-                        modifier = Modifier.fillMaxWidth().height(54.dp),
-                        shape = RoundedCornerShape(16.dp),
-                    ) { Text("联系家人", fontSize = 18.sp) }
-                    TextButton(
-                        onClick = { vm.taskAction("later") },
-                        enabled = !state.safetyAnalysisLoading,
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                    ) { Text("30分钟后提醒") }
                 }
             }
-        }
         }
         BaselineCard(
             baseline = state.safetyBaseline,
@@ -652,45 +676,15 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
 }
 
 @Composable
-private fun SafetyPictureSourceSwitch(recorded: Boolean, onChange: (Boolean) -> Unit) {
-    Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
-        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = recorded,
-                onClick = { onChange(true) },
-                label = { Text("走廊画面", fontSize = 16.sp) },
-                leadingIcon = { Icon(Icons.Rounded.VideoLibrary, null) },
-                modifier = Modifier.weight(1f),
-            )
-            FilterChip(
-                selected = !recorded,
-                onClick = { onChange(false) },
-                label = { Text("实时画面", fontSize = 16.sp) },
-                leadingIcon = { Icon(Icons.Rounded.Videocam, null) },
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
-}
-
-@Composable
 private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
     val result = state.safetyAnalysis
-    val resultColor = when (result?.riskLevel) {
-        "high", "medium" -> Color(0xFFFFE6E3)
-        "low" -> Color(0xFFFFF3D6)
-        else -> BrandSoft
-    }
+    val resultColor = safetyRiskBackground(result?.riskLevel)
     Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = resultColor)) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 RoundIcon(
                     Icons.Rounded.Search,
-                    when (result?.riskLevel) {
-                        "high", "medium" -> Color(0xFFC73A31)
-                        "low" -> Color(0xFFB77900)
-                        else -> Brand
-                    },
+                    safetyRiskForeground(result?.riskLevel),
                 )
                 Spacer(Modifier.width(13.dp))
                 Column(Modifier.weight(1f)) {
@@ -707,18 +701,10 @@ private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
             }
             result?.let {
                 HorizontalDivider(color = Ink.copy(alpha = .08f))
-                val statusColor = when (it.riskLevel) {
-                    "high", "medium" -> Color(0xFFC73A31)
-                    "low" -> Color(0xFF9A6700)
-                    else -> Brand
-                }
+                val statusColor = safetyRiskForeground(it.riskLevel)
                 Surface(color = statusColor.copy(alpha = .12f), shape = RoundedCornerShape(50)) {
                     Text(
-                        when (it.riskLevel) {
-                            "high", "medium" -> "需要整改"
-                            "low" -> "潜在风险"
-                            else -> "通道安全"
-                        },
+                        safetyRiskLabel(it.riskLevel),
                         color = statusColor,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),

@@ -65,7 +65,7 @@ Windows 本地 Agent 默认监听 `http://电脑IP:8000`，OpenAPI 交互文档�
 }
 ```
 
-风险框坐标范围为 0–1000，与原始图片分辨率无关。`risk_level` 可为 `clear`、`low`、`medium`、`high` 或 `insufficient`。绿色状态对应 `clear`，黄色状态对应 `low`，`medium` 和 `high` 都会在 APK 中显示为需要整改的红色状态。
+风险框坐标范围为 0–1000，与原始图片分辨率无关。VLM 先直接输出 `event_type`：`clear`、`passage_blocked`、`fall_hazard` 或 `insufficient`。只有 `fall_hazard` 再输出低、中、高跌倒风险；后端只校验和路由该结果，不根据杂物数量或通道占用二次升降级。APK 卡片分别显示绿色“未检测到风险”、黄色“低风险”、橙色“中风险”、红色“高风险”、蓝色“通道阻塞”和灰色“画面不清楚”；颜色与文字共同表达结果，不能只依赖颜色区分。
 
 `notification_required` 和 `speech_auto_play` 已包含同一风险去重逻辑。客户端只按返回值执行提醒，不能根据轮询次数重复播放。
 
@@ -116,3 +116,6 @@ Windows 本地 Agent 默认监听 `http://电脑IP:8000`，OpenAPI 交互文档�
 ## 安全配置
 
 萤石 AppSecret、VLM/LLM API Key 和设备验证码只保存在 Windows 后端。`sdk-session` 会向同一家庭可信局域网中的 APK 返回 EZPlayer 播放所需的短期信息，AppSecret 不会发送到 APK。正式外网部署时需要增加登录、HTTPS 和设备级授权。
+# 白噪音聊天动作（2026-09-05）
+
+`POST /api/v1/assistant/chat` 返回的 `assistant_message.actions` 可包含 `kind=start_intervention`、`payload.intervention_id=white_noise_30min`。新增可选布尔字段 `payload.auto_start`：默认 false，表示用户点击播放；true 表示本轮明确要求现在播放，Android 自动调用 `POST /api/v1/assistant/actions/{id}/confirm` 后打开播放器。旧客户端忽略此字段时仍可点击播放。读取历史消息不触发自动播放；模型判断失败不授权自动播放。接口确认幂等，重复确认不会新增干预会话。

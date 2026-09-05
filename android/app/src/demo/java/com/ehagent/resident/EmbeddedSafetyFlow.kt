@@ -5,7 +5,9 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.widget.VideoView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -74,11 +77,15 @@ internal fun EmbeddedSafetyFlow(vm: MainViewModel) {
     fun analyzeCurrentFrame() {
         if (!checking) return
         scope.launch {
-            runCatching { extractWalkwayFrame(context, videos[stage]) }
-                .onSuccess { image ->
+            runCatching {
+                extractWalkwayFrame(context, videos[stage]) to
+                    extractWalkwayFrame(context, R.raw.safety_clear)
+            }
+                .onSuccess { (image, baselineImage) ->
                     vm.analyzeSafetyFrame(
                         image = image,
                         preview = true,
+                        baselineImage = baselineImage,
                         onSuccess = {
                             result = it
                             checking = false
@@ -106,16 +113,8 @@ internal fun EmbeddedSafetyFlow(vm: MainViewModel) {
     }
 
     val needsCleanup = result?.riskLevel in setOf("medium", "high")
-    val resultColor = when (result?.riskLevel) {
-        "medium", "high" -> Color(0xFFC73A31)
-        "insufficient" -> Color(0xFFC47B22)
-        else -> Brand
-    }
-    val resultBackground = when (result?.riskLevel) {
-        "medium", "high" -> Color(0xFFFFE6E3)
-        "insufficient" -> Color(0xFFFFF1DA)
-        else -> BrandSoft
-    }
+    val resultColor = safetyRiskForeground(result?.riskLevel)
+    val resultBackground = safetyRiskBackground(result?.riskLevel)
 
     Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -131,24 +130,31 @@ internal fun EmbeddedSafetyFlow(vm: MainViewModel) {
                 }
             }
             key(stage, playbackRound) {
-                AndroidView(
-                    factory = {
-                        VideoView(it).apply {
-                            setOnPreparedListener { player ->
-                                player.isLooping = false
-                                player.setVolume(0f, 0f)
-                                start()
-                            }
-                            setOnCompletionListener { analyzeCurrentFrame() }
-                            setVideoURI(Uri.parse("android.resource://${context.packageName}/${videos[stage]}"))
-                        }
-                    },
-                    modifier = Modifier
+                Box(
+                    Modifier
                         .fillMaxWidth()
                         .aspectRatio(16f / 9f)
                         .clip(RoundedCornerShape(18.dp))
                         .background(Color.Black),
-                )
+                ) {
+                    AndroidView(
+                        factory = {
+                            VideoView(it).apply {
+                                setOnPreparedListener { player ->
+                                    player.isLooping = false
+                                    player.setVolume(0f, 0f)
+                                    start()
+                                }
+                                setOnCompletionListener { analyzeCurrentFrame() }
+                                setVideoURI(Uri.parse("android.resource://${context.packageName}/${videos[stage]}"))
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+                    )
+                    result?.hazardRegions?.takeIf { it.isNotEmpty() }?.let { regions ->
+                        DemoRiskRegionOverlay(regions, Modifier.matchParentSize())
+                    }
+                }
             }
         }
     }
@@ -195,12 +201,7 @@ internal fun EmbeddedSafetyFlow(vm: MainViewModel) {
                 HorizontalDivider(color = Ink.copy(alpha = .08f))
                 Surface(color = resultColor.copy(alpha = .12f), shape = RoundedCornerShape(50)) {
                     Text(
-                        when (current.riskLevel) {
-                            "medium", "high" -> "需要整理"
-                            "insufficient" -> "画面不清楚"
-                            "low" -> "注意观察"
-                            else -> "通道安全"
-                        },
+                        safetyRiskLabel(current.riskLevel),
                         color = resultColor,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
@@ -222,9 +223,13 @@ internal fun EmbeddedSafetyFlow(vm: MainViewModel) {
 
     result?.let { current ->
         if (needsCleanup) {
-            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
+            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = resultBackground)) {
                 Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text(if (stage == 0) "请留意" else "复查结果", color = Color(0xFFC73A31), fontWeight = FontWeight.Bold)
+                    Text(
+                        "${safetyRiskLabel(current.riskLevel)}${if (stage == 0) "提醒" else "复查结果"}",
+                        color = resultColor,
+                        fontWeight = FontWeight.Bold,
+                    )
                     Text(current.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
                     Text(current.actionText, fontSize = 18.sp, lineHeight = 28.sp)
                     Button(
@@ -273,6 +278,59 @@ internal fun EmbeddedSafetyFlow(vm: MainViewModel) {
                 Icon(Icons.Rounded.Refresh, null)
                 Spacer(Modifier.width(8.dp))
                 Text("再次检查", fontSize = 18.sp)
+            }
+        }
+    }
+}
+
+/**
+ * Draws the same normalized (0–1000) obstacle regions used by the live-camera
+ * view. The overlay is intentionally absent until the demo frame has been
+ * analyzed and the service has returned a reliable location.
+ */
+@Composable
+private fun DemoRiskRegionOverlay(regions: List<HazardRegion>, modifier: Modifier = Modifier) {
+    Box(modifier) {
+        Canvas(Modifier.matchParentSize()) {
+            regions.forEach { region ->
+                val color = safetyRiskForeground(region.riskLevel)
+                val left = size.width * region.x1 / 1000f
+                val top = size.height * region.y1 / 1000f
+                val width = size.width * (region.x2 - region.x1) / 1000f
+                val height = size.height * (region.y2 - region.y1) / 1000f
+                val topLeft = androidx.compose.ui.geometry.Offset(left, top)
+                val boxSize = androidx.compose.ui.geometry.Size(width, height)
+                drawRect(color.copy(alpha = .14f), topLeft = topLeft, size = boxSize)
+                drawRect(color, topLeft = topLeft, size = boxSize, style = Stroke(width = 3.dp.toPx()))
+            }
+        }
+        Surface(
+            modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+            color = Color.Black.copy(alpha = .68f),
+            shape = RoundedCornerShape(6.dp),
+        ) {
+            Text(
+                "最近检查位置",
+                color = Color.White,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+            )
+        }
+        Column(
+            Modifier.align(Alignment.BottomStart).padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            regions.distinctBy { it.label to it.riskLevel }.take(3).forEach { region ->
+                val color = safetyRiskForeground(region.riskLevel)
+                Surface(color = Color.Black.copy(alpha = .68f), shape = RoundedCornerShape(6.dp)) {
+                    Text(
+                        "${safetyRiskLabel(region.riskLevel)} · ${region.label}",
+                        color = color,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                    )
+                }
             }
         }
     }

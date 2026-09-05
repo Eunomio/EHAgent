@@ -61,8 +61,8 @@ def conversation(conversation_id: str, assistant: AssistantDep) -> dict[str, Any
 
 
 @router.post("/events/{event_id}/start")
-def start_event(event_id: str, assistant: AssistantDep) -> dict[str, Any]:
-    result = assistant.start_event(event_id)
+async def start_event(event_id: str, assistant: AssistantDep) -> dict[str, Any]:
+    result = await assistant.start_event(event_id)
     if result is None:
         raise HTTPException(404, "没有找到这条主动关怀")
     return public_assistant_payload(result)

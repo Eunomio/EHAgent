@@ -1,9 +1,37 @@
 import asyncio
+import json
 
 import httpx
 
 from app.core.config import Settings
 from app.llm.service import LlmService
+
+
+def test_sleep_care_prompt_and_unavailable_response() -> None:
+    async def scenario() -> None:
+        def handler(request):
+            body = json.loads(request.content)
+            assert "不要按轮次背固定台词" in body["instructions"]
+            assert "未来意愿" in body["instructions"]
+            assert "trigger_report" in body["input"]
+            return httpx.Response(200, json={"output": [{"type": "message", "content": [
+                {"type": "output_text", "text": "您说是噪声吵醒的，后来安静下来了吗？"}
+            ]}]})
+
+        settings = Settings(llm_enabled=True, llm_api_key="test", llm_model="test")
+        context = {"sleep_care": {"trigger_report": {"report_date": "2026-08-27"}}}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            service = LlmService(settings, http)
+            reply, _, source = await service.chat_assistant("是楼下太吵", context, [])
+            assert source == "llm"
+            assert "噪声" in reply
+            settings.llm_enabled = False
+            reply, _, source = await service.chat_assistant("我睡不着", context, [])
+            assert source == "unavailable"
+            assert "连不上" in reply
+            assert "白噪音" not in reply
+
+    asyncio.run(scenario())
 
 
 def test_structured_safety_copy_from_responses_api() -> None:

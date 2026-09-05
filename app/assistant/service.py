@@ -45,17 +45,6 @@ class AssistantService:
                 response={"resident_message_id": user_message["id"], "text": message},
                 conversation_id=conversation["id"],
             )
-        scripted_reply = self._sleep_return_delay_reply(active_event, history)
-        if scripted_reply is not None:
-            assistant_message = self.store.add_assistant_message(
-                conversation["id"], "assistant", scripted_reply, "proactive_rule",
-                context_used=["最近7晚睡眠变化"],
-            )
-            return {
-                "conversation_id": conversation["id"],
-                "user_message": user_message,
-                "assistant_message": assistant_message,
-            }
         extracted, extraction_source = await self.llm.extract_profile_facts(message)
         candidate_facts: list[dict[str, Any]] = []
         for item in extracted.facts:
@@ -83,6 +72,9 @@ class AssistantService:
             if fact["status"] == "candidate":
                 candidate_facts.append(fact)
         context, context_used = self.context_builder.build()
+        if active_event and active_event.get("event_type") == "sleep_change":
+            context["sleep_care"] = self._sleep_care_context(active_event)
+            context_used.append("本次睡眠关怀的触发报告与依据")
         tool_decision, tool_plan_source = await self.llm.plan_device_tool(
             message, self.device_tools.state()
         )
@@ -104,6 +96,7 @@ class AssistantService:
             context_used.append("刚刚调用的设备结果")
 
         reply, sources, source = await self.llm.chat_assistant(message, context, history)
+        noise = await self.llm.plan_white_noise(message, reply, history)
         if device_tool and device_consent == "unset":
             reply = (
                 f"{reply}\n\n要完成这个操作，小安需要控制已连接居家设备的权限。"
@@ -128,6 +121,7 @@ class AssistantService:
             active_event["id"] if active_event else None,
             device_tool,
             device_consent,
+            noise.action,
         )
         assistant_message["actions"] = actions
         return {
@@ -145,19 +139,19 @@ class AssistantService:
             "messages": self.store.assistant_messages(conversation_id, limit=50, with_actions=True),
         }
 
-    @staticmethod
-    def _sleep_return_delay_reply(
-        event: dict[str, Any] | None, history: list[dict[str, Any]]
-    ) -> str | None:
-        if not event or event.get("context", {}).get("script_id") != "sleep_return_delay_v1":
-            return None
-        resident_turn = sum(item.get("role") == "user" for item in history)
-        replies = [
-            "听起来这次起夜影响了后面的休息。您当时是身体不舒服，还是脑子比较清醒、一直睡不着？",
-            "明白了。今晚您再睡不着，可以试试听一会儿轻柔的白噪音。您叫我，我就给您放。",
-            "好，我在。今晚需要的时候叫我就行。",
-        ]
-        return replies[resident_turn] if resident_turn < len(replies) else None
+    def _sleep_care_context(self, event: dict[str, Any]) -> dict[str, Any]:
+        report = next((item for item in self.store.sleep_history(60)
+                       if item.get("id") == event.get("source_ref")), None)
+        return {
+            "event_id": event["id"], "reason": event["reason"],
+            "evidence": event.get("context", {}),
+            "trigger_report": {
+                key: report.get(key) for key in (
+                    "report_date", "source", "sleep_start", "sleep_end", "quality",
+                    "duration_minutes", "awake_minutes", "bed_exit_count", "stages",
+                )
+            } if report else None,
+        }
 
     def start_profile_onboarding(self) -> dict[str, Any]:
         conversation = self.store.create_assistant_conversation("完善我的情况")
@@ -418,7 +412,7 @@ class AssistantService:
         ]
         return message
 
-    def start_event(self, event_id: str) -> dict[str, Any] | None:
+    async def start_event(self, event_id: str) -> dict[str, Any] | None:
         event = self.store.get_proactive_event(event_id)
         if event is None:
             return None
@@ -430,8 +424,16 @@ class AssistantService:
                     "assistant_message": conversation["messages"][-1],
                 }
         conversation = self.store.create_assistant_conversation(event["title"])
+        opening, sources, source = event["message"], [], "proactive_rule"
+        if event["event_type"] == "sleep_change":
+            context, _ = self.context_builder.build()
+            context["sleep_care"] = self._sleep_care_context(event)
+            opening, sources, source = await self.llm.chat_assistant(
+                "请根据本次睡眠关怀的触发报告，生成一句自然的开场问询。老人尚未回答。",
+                context, [],
+            )
         message = self.store.add_assistant_message(
-            conversation["id"], "assistant", event["message"], "proactive_rule",
+            conversation["id"], "assistant", opening, source, sources,
             context_used=[f"触发原因：{event['reason']}"],
         )
         if event["event_type"] == "environment_risk":
@@ -460,6 +462,14 @@ class AssistantService:
                     {"event_id": event_id},
                 ),
             ]
+        if event["event_type"] == "sleep_change" and source == "llm":
+            noise = await self.llm.plan_white_noise("", opening, [])
+            if noise.action == "offer":
+                actions.append(self.store.create_assistant_action(
+                    conversation["id"], message["id"], "start_intervention",
+                    "播放30分钟白噪音", {"intervention_id": "white_noise_30min",
+                                       "event_id": event_id, "auto_start": False},
+                ))
         message["actions"] = actions
         self.store.update_proactive_event(
             event_id, "engaged", conversation_id=conversation["id"]
@@ -472,6 +482,7 @@ class AssistantService:
         event_id: str | None = None,
         device_tool: str | None = None,
         device_consent: str = "unset",
+        white_noise_action: str = "none",
     ) -> list[dict[str, Any]]:
         actions: list[dict[str, Any]] = []
         if device_tool and device_consent == "unset":
@@ -505,9 +516,7 @@ class AssistantService:
                 "不用记", {"fact_id": fact["id"]},
             ))
         intervention_id = None
-        if any(word in message for word in (
-            "睡不着", "不好睡", "难入睡", "再次入睡", "再睡着", "睡不回去", "想听白噪音",
-        )):
+        if white_noise_action in {"offer", "play_now"}:
             intervention_id = "white_noise_30min"
         elif any(word in message for word in ("紧张", "担心", "后怕", "放松")):
             intervention_id = "relaxation_5min"
@@ -516,8 +525,9 @@ class AssistantService:
             if resource:
                 actions.append(self.store.create_assistant_action(
                     conversation_id, assistant_message_id, "start_intervention",
-                    resource["title"], {
+                    "播放30分钟白噪音" if intervention_id == "white_noise_30min" else resource["title"], {
                         "intervention_id": intervention_id, "event_id": event_id,
+                        "auto_start": white_noise_action == "play_now",
                     },
                 ))
         return actions

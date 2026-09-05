@@ -149,6 +149,7 @@ data class AssistantAction(
     val kind: String = "",
     val interventionId: String? = null,
     val followUpMessage: AssistantMessage? = null,
+    val autoStart: Boolean = false,
 )
 data class AssistantMessage(
     val id: String,
@@ -303,13 +304,21 @@ class ProductApi(private val baseUrl: String) {
         return root.toSafetyAnalysis()
     }
 
-    suspend fun analyzeSafetyFrame(image: ByteArray, preview: Boolean = false): SafetyAnalysis {
+    suspend fun analyzeSafetyFrame(
+        image: ByteArray,
+        preview: Boolean = false,
+        baselineImage: ByteArray? = null,
+    ): SafetyAnalysis {
+        val body = JSONObject()
+            .put("image_base64", Base64.encodeToString(image, Base64.NO_WRAP))
+            .put("preview", preview)
+        baselineImage?.let {
+            body.put("baseline_image_base64", Base64.encodeToString(it, Base64.NO_WRAP))
+        }
         val root = request(
             "/api/v1/devices/c6c/safety/analyze-frame",
             method = "POST",
-            body = JSONObject()
-                .put("image_base64", Base64.encodeToString(image, Base64.NO_WRAP))
-                .put("preview", preview),
+            body = body,
             readTimeoutMillis = 120_000,
         )
         return root.toSafetyAnalysis()
@@ -599,6 +608,7 @@ private fun JSONObject.toAssistantAction(): AssistantAction = AssistantAction(
     interventionId = optJSONObject("payload")?.optString("intervention_id")
         ?.takeIf { it.isNotBlank() },
     followUpMessage = optJSONObject("follow_up_message")?.toAssistantMessage(),
+    autoStart = optJSONObject("payload")?.optBoolean("auto_start", false) ?: false,
 )
 
 private fun JSONObject.toProactiveEvent() = ProactiveEvent(

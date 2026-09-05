@@ -56,7 +56,15 @@ def test_missing_assistant_conversation_returns_404(client) -> None:
     assert response.status_code == 404
 
 
-def test_sleep_demo_uses_existing_proactive_conversation(client) -> None:
+def test_sleep_demo_uses_existing_proactive_conversation(client, monkeypatch) -> None:
+    calls = []
+
+    async def model_reply(message, context, history):
+        calls.append((message, context, history))
+        assert context["sleep_care"]["trigger_report"]["report_date"]
+        return f"模型动态回复{len(calls)}", [], "llm"
+
+    monkeypatch.setattr(client.app.state.llm, "chat_assistant", model_reply)
     loaded = client.post("/api/v1/devices/sleep/demo")
     assert loaded.status_code == 200
     event = client.get("/api/v1/resident/dashboard").json()["care"]["active"]
@@ -64,6 +72,7 @@ def test_sleep_demo_uses_existing_proactive_conversation(client) -> None:
 
     started = client.post(f"/api/v1/assistant/events/{event['id']}/start").json()
     conversation_id = started["conversation_id"]
+    assert started["assistant_message"]["content"] == "模型动态回复1"
     first = client.post(
         "/api/v1/assistant/chat",
         json={
@@ -71,7 +80,7 @@ def test_sleep_demo_uses_existing_proactive_conversation(client) -> None:
             "message": "哎呀，我昨晚起来以后再躺下就睡不着了，白天也没有精神。",
         },
     ).json()
-    assert "身体不舒服" in first["assistant_message"]["content"]
+    assert first["assistant_message"]["content"] == "模型动态回复2"
 
     second = client.post(
         "/api/v1/assistant/chat",
@@ -80,7 +89,13 @@ def test_sleep_demo_uses_existing_proactive_conversation(client) -> None:
             "message": "身体没有不舒服，就是脑子清醒了，后来一直睡不着。",
         },
     ).json()
-    assert "轻柔的白噪音" in second["assistant_message"]["content"]
+    assert second["assistant_message"]["content"] == "模型动态回复3"
+    third = client.post("/api/v1/assistant/chat", json={
+        "conversation_id": conversation_id, "message": "不想听声音，想换个话题",
+    }).json()
+    assert third["assistant_message"]["content"] == "模型动态回复4"
+    assert calls[-1][0] == "不想听声音，想换个话题"
+    assert any("身体没有不舒服" in item["content"] for item in calls[-1][2])
 
 
 def test_device_control_asks_once_then_executes_without_repeating_consent(client) -> None:

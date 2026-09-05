@@ -116,8 +116,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         set(value) { preferences.edit().putString("night_awakening_auto_expanded_id", value).apply() }
 
     private var sleepDemoSeedAttempted: Boolean
-        get() = preferences.getBoolean("initial_review_sleep_seed_v1", false)
-        set(value) { preferences.edit().putBoolean("initial_review_sleep_seed_v1", value).apply() }
+        get() = preferences.getBoolean("sleep_return_care_seed_v1", false)
+        set(value) { preferences.edit().putBoolean("sleep_return_care_seed_v1", value).apply() }
 
     private var savedBaselineNeedsRefresh: Boolean
         get() = preferences.getBoolean("safety_baseline_needs_refresh", false)
@@ -142,7 +142,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val settings = api.settings()
             val profileFacts = runCatching { api.profileFacts() }.getOrDefault(emptyList())
             val needsCurrentReviewData = BuildConfig.DEMO_MODE &&
-                devices.sleepDemoDatasetId != "initial-review-20260902-v1" &&
+                devices.sleepDemoDatasetId != "sleep-return-care-20260904-v1" &&
                 !sleepDemoSeedAttempted
             if (
                 BuildConfig.DEMO_MODE &&
@@ -383,6 +383,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun analyzeSafetyFrame(
         image: ByteArray,
         preview: Boolean = false,
+        baselineImage: ByteArray? = null,
         onSuccess: (SafetyAnalysis) -> Unit,
         onFailure: (String) -> Unit,
     ) = viewModelScope.launch {
@@ -390,7 +391,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             safetyAnalysisLoading = true,
             safetyAnalysisError = null,
         )
-        runCatching { ProductApi(backendUrl).analyzeSafetyFrame(image, preview) }
+        runCatching { ProductApi(backendUrl).analyzeSafetyFrame(image, preview, baselineImage) }
             .onSuccess { analysis ->
                 _state.value = _state.value.copy(
                     safetyAnalysis = analysis,
@@ -852,7 +853,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sleepDemoSeedAttempted = true
                 _state.value = _state.value.copy(
                     sleepActionLoading = false,
-                    notice = "7晚睡眠数据已导入",
+                    notice = "健康基线和变化组睡眠数据已导入",
                 )
                 refresh()
             }
@@ -982,6 +983,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             refreshSafetyStatus()
             refreshPrivacyAndDeviceSettings()
+            result.assistantMessage.actions.firstOrNull {
+                it.autoStart && it.status == "pending" &&
+                    it.kind == "start_intervention" && it.interventionId == "white_noise_30min"
+            }?.let { confirmAssistantAction(it.id) }
         }.onFailure {
             _state.value = _state.value.copy(
                 assistantMessages = _state.value.assistantMessages.filterNot {
@@ -993,7 +998,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val confirmingAssistantActions = mutableSetOf<String>()
+
     fun confirmAssistantAction(actionId: String) = viewModelScope.launch {
+        if (!confirmingAssistantActions.add(actionId)) return@launch
         val selectedAction = _state.value.assistantMessages
             .asSequence()
             .flatMap { it.actions.asSequence() }
@@ -1060,6 +1068,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     assistantError = "暂时没有发出请求，请稍后再试。"
                 )
             }
+        confirmingAssistantActions.remove(actionId)
     }
 
     fun stopWhiteNoise() {

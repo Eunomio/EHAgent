@@ -77,19 +77,20 @@ def test_demo_sleep_is_idempotent_isolated_and_clearable(client: TestClient) -> 
     second = client.post("/api/v1/devices/sleep/demo")
     assert first.status_code == 200
     assert second.status_code == 200
-    assert first.json()["imported"] == 7
+    assert first.json()["imported"] == 14
+    assert first.json()["proactive_event"]["context"]["script_id"] == "sleep_return_delay_v1"
 
     report = client.get("/api/v1/resident/sleep").json()
     assert report["data_source"] == "demo_generated"
-    assert len(report["history"]) == 7
-    assert report["baseline"]["state"] == "baseline_building"
+    assert len(report["history"]) == 14
+    assert report["baseline"]["state"] == "close_to_baseline"
     assert report["latest"]["bed_exit_count"] == 1
-    assert report["latest"]["awake_after_bed_return_minutes"] == 31
+    assert report["latest"]["awake_after_bed_return_minutes"] == 12
     assert report["sync"]["message"] == "演示数据已就绪"
 
     cleared = client.delete("/api/v1/devices/sleep/demo")
     assert cleared.status_code == 200
-    assert cleared.json()["deleted"] == 7
+    assert cleared.json()["deleted"] == 14
     restored = client.get("/api/v1/resident/sleep").json()
     assert restored["data_source"] == "ezviz_sleep_assistant"
     assert len(restored["history"]) == 1
@@ -109,9 +110,9 @@ def test_demo_night_awakening_is_idempotent_and_clearable(client: TestClient) ->
     report = client.get("/api/v1/resident/sleep").json()
     awakening = report["night_awakening"]
     assert awakening["state"] == "active"
-    assert awakening["attention"] == "insufficient"
+    assert awakening["attention"] == "routine_care"
     assert sum(item["adverse_change"] for item in awakening["reasons"]) == 0
-    assert awakening["baseline"]["baseline_nights"] == 6
+    assert awakening["baseline"]["baseline_nights"] == 13
     assert "预测到跌倒" in awakening["disclaimer"]
 
     reset = client.delete("/api/v1/devices/sleep/demo/night-awakening")
@@ -124,7 +125,7 @@ def test_demo_night_awakening_is_idempotent_and_clearable(client: TestClient) ->
 def test_clearing_sleep_demo_also_clears_night_awakening(client: TestClient) -> None:
     client.post("/api/v1/devices/sleep/demo")
     client.post("/api/v1/devices/sleep/demo/night-awakening")
-    assert client.delete("/api/v1/devices/sleep/demo").json()["deleted"] == 7
+    assert client.delete("/api/v1/devices/sleep/demo").json()["deleted"] == 14
     assert client.get("/api/v1/resident/sleep").json()["night_awakening"]["state"] == "waiting"
 
 
