@@ -115,10 +115,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         get() = preferences.getString("night_awakening_auto_expanded_id", null)
         set(value) { preferences.edit().putString("night_awakening_auto_expanded_id", value).apply() }
 
-    private var sleepDemoSeedAttempted: Boolean
-        get() = preferences.getBoolean("sleep_return_care_seed_v1", false)
-        set(value) { preferences.edit().putBoolean("sleep_return_care_seed_v1", value).apply() }
-
     private var savedBaselineNeedsRefresh: Boolean
         get() = preferences.getBoolean("safety_baseline_needs_refresh", false)
         set(value) { preferences.edit().putBoolean("safety_baseline_needs_refresh", value).apply() }
@@ -137,25 +133,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(loading = true, error = null, notice = null)
         runCatching {
             val api = ProductApi(backendUrl)
-            var dashboard = api.dashboard()
-            var devices = api.devices()
+            val dashboard = api.dashboard()
+            val devices = api.devices()
             val settings = api.settings()
             val profileFacts = runCatching { api.profileFacts() }.getOrDefault(emptyList())
-            val needsCurrentReviewData = BuildConfig.DEMO_MODE &&
-                devices.sleepDemoDatasetId != "sleep-return-care-20260904-v1" &&
-                !sleepDemoSeedAttempted
-            if (
-                BuildConfig.DEMO_MODE &&
-                (shouldAutoLoadSleepDemo(dashboard.sleep.duration, sleepDemoSeedAttempted) || needsCurrentReviewData)
-            ) {
-                sleepDemoSeedAttempted = true
-                runCatching { api.loadSleepDemo() }.onSuccess {
-                    dashboard = api.dashboard()
-                    devices = api.devices()
-                }
-            } else if (!sleepDemoSeedAttempted) {
-                sleepDemoSeedAttempted = true
-            }
             val sleepHistory = runCatching { api.sleepHistory() }.getOrDefault(emptyList())
             val safetyBaseline = runCatching { api.safetyBaseline() }
                 .getOrDefault(_state.value.safetyBaseline)
@@ -845,85 +826,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
     }
 
-    fun loadSleepDemo() = viewModelScope.launch {
-        if (_state.value.sleepActionLoading) return@launch
-        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
-        runCatching { ProductApi(backendUrl).loadSleepDemo() }
-            .onSuccess {
-                sleepDemoSeedAttempted = true
-                _state.value = _state.value.copy(
-                    sleepActionLoading = false,
-                    notice = "健康基线和变化组睡眠数据已导入",
-                )
-                refresh()
-            }
-            .onFailure {
-                _state.value = _state.value.copy(sleepActionLoading = false, error = it.message)
-            }
-    }
-
-    fun clearSleepDemo() = viewModelScope.launch {
-        if (_state.value.sleepActionLoading) return@launch
-        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
-        runCatching { ProductApi(backendUrl).clearSleepDemo() }
-            .onSuccess {
-                nightAwakeningExpanded = false
-                _state.value = _state.value.copy(
-                    sleepActionLoading = false,
-                    nightAwakeningExpanded = false,
-                    notice = "近期睡眠记录已清除",
-                )
-                refresh()
-            }
-            .onFailure {
-                _state.value = _state.value.copy(sleepActionLoading = false, error = it.message)
-            }
-    }
-
     fun toggleNightAwakeningExpanded() {
         val expanded = !_state.value.nightAwakeningExpanded
         nightAwakeningExpanded = expanded
         _state.value = _state.value.copy(nightAwakeningExpanded = expanded)
-    }
-
-    fun activateNightAwakeningDemo() = viewModelScope.launch {
-        if (_state.value.sleepActionLoading) return@launch
-        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
-        runCatching { ProductApi(backendUrl).activateNightAwakeningDemo() }
-            .onSuccess {
-                _state.value = _state.value.copy(
-                    sleepActionLoading = false,
-                    notice = "起夜关注已开启",
-                )
-                refresh()
-            }
-            .onFailure {
-                _state.value = _state.value.copy(
-                    sleepActionLoading = false,
-                    error = it.message ?: "起夜关注开启失败",
-                )
-            }
-    }
-
-    fun resetNightAwakeningDemo() = viewModelScope.launch {
-        if (_state.value.sleepActionLoading) return@launch
-        _state.value = _state.value.copy(sleepActionLoading = true, error = null)
-        runCatching { ProductApi(backendUrl).resetNightAwakeningDemo() }
-            .onSuccess {
-                nightAwakeningExpanded = false
-                _state.value = _state.value.copy(
-                    sleepActionLoading = false,
-                    nightAwakeningExpanded = false,
-                    notice = "起夜关注已重置",
-                )
-                refresh()
-            }
-            .onFailure {
-                _state.value = _state.value.copy(
-                    sleepActionLoading = false,
-                    error = it.message ?: "起夜关注重置失败",
-                )
-            }
     }
 
     fun saveContact(name: String, phone: String) = viewModelScope.launch {

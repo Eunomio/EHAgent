@@ -13,8 +13,3 @@ internal fun NightAwakening.shouldAutoExpand(lastExpandedId: String?): Boolean =
         attention == "extra_care" &&
         id != null &&
         id != lastExpandedId
-
-internal fun shouldAutoLoadSleepDemo(
-    sleepDuration: Int?,
-    alreadyAttempted: Boolean,
-): Boolean = sleepDuration == null && !alreadyAttempted

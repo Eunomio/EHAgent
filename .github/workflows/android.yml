@@ -24,7 +24,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          gradle :app:assembleDebug --stacktrace 2>&1 | tee android-build-output.txt
+          gradle :app:testActualDebugUnitTest :app:assembleActualDebug --stacktrace 2>&1 | tee android-build-output.txt
       - name: Show compiler errors
         if: failure()
         shell: bash
@@ -41,4 +41,4 @@ jobs:
         if: success()
         with:
           name: EHAgent-resident-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/actual/debug/app-actual-debug.apk

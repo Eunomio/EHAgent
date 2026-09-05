@@ -44,12 +44,6 @@ class NightAwakeningTest {
         assertFalse(NightAwakening(id = "event-2").shouldAutoExpand(null))
     }
 
-    @Test
-    fun `empty first install attempts demo import only once`() {
-        assertTrue(shouldAutoLoadSleepDemo(sleepDuration = null, alreadyAttempted = false))
-        assertFalse(shouldAutoLoadSleepDemo(sleepDuration = null, alreadyAttempted = true))
-        assertFalse(shouldAutoLoadSleepDemo(sleepDuration = 440, alreadyAttempted = false))
-    }
 
     @Test
     fun `optional reason fields and long copy are retained`() {

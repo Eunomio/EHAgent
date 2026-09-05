@@ -18,15 +18,8 @@ android {
 
     flavorDimensions += "content"
     productFlavors {
-        create("demo") {
-            dimension = "content"
-            applicationIdSuffix = ".demo"
-            versionNameSuffix = "-demo"
-            buildConfigField("boolean", "DEMO_MODE", "true")
-        }
         create("actual") {
             dimension = "content"
-            buildConfigField("boolean", "DEMO_MODE", "false")
         }
     }
 

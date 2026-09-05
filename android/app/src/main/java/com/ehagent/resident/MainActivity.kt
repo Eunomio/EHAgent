@@ -534,9 +534,7 @@ private fun ProactiveCareCard(event: ProactiveEvent, onClick: () -> Unit) {
                 Icon(Icons.Rounded.ChevronRight, "回应小安")
             }
             Text(event.message, fontSize = 17.sp, lineHeight = 25.sp, maxLines = 3)
-            if (!BuildConfig.DEMO_MODE) {
-                Text("为什么询问：${event.reason}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
-            }
+            Text("为什么询问：${event.reason}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
         }
     }
 }
@@ -614,52 +612,48 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
     }
     PageBody {
         PageTitle("居家安全", "留意每天常走的地方", Icons.Rounded.HealthAndSafety)
-        if (BuildConfig.DEMO_MODE) {
-            EmbeddedSafetyFlow(vm)
+        CameraStreamCard(state, vm)
+        SafetyCheckCard(state, vm)
+        if (state.dashboard.safety.taskId == null) {
+            EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
         } else {
-            CameraStreamCard(state, vm)
-            SafetyCheckCard(state, vm)
-            if (state.dashboard.safety.taskId == null) {
-                EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
-            } else {
-                Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
-                    Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Text(
-                            if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
-                            color = Color(0xFFC73A31),
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                        Text(state.dashboard.safety.detail, fontSize = 18.sp, lineHeight = 28.sp)
-                        Button(
-                            onClick = vm::confirmSafetyCleaned,
-                            enabled = !state.safetyAnalysisLoading && state.safetyBaseline.ready &&
-                                !state.safetyBaselineNeedsRefresh && !state.cameraPaused,
-                            modifier = Modifier.fillMaxWidth().height(54.dp),
-                            shape = RoundedCornerShape(16.dp),
-                        ) {
-                            if (state.safetyAnalysisLoading) {
-                                CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
-                                Spacer(Modifier.width(9.dp))
-                                Text("正在重新检查…", fontSize = 18.sp)
-                            } else {
-                                Icon(Icons.Rounded.Done, null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("我已整理好", fontSize = 18.sp)
-                            }
+            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E3))) {
+                Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(
+                        if (state.dashboard.safety.headline.startsWith("再次检查")) "复查结果" else "请留意",
+                        color = Color(0xFFC73A31),
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(state.dashboard.safety.headline, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                    Text(state.dashboard.safety.detail, fontSize = 18.sp, lineHeight = 28.sp)
+                    Button(
+                        onClick = vm::confirmSafetyCleaned,
+                        enabled = !state.safetyAnalysisLoading && state.safetyBaseline.ready &&
+                            !state.safetyBaselineNeedsRefresh && !state.cameraPaused,
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        if (state.safetyAnalysisLoading) {
+                            CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(9.dp))
+                            Text("正在重新检查…", fontSize = 18.sp)
+                        } else {
+                            Icon(Icons.Rounded.Done, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("我已整理好", fontSize = 18.sp)
                         }
-                        OutlinedButton(
-                            onClick = { vm.taskAction("need_help"); dial(context, state.dashboard.contactPhone) },
-                            enabled = !state.safetyAnalysisLoading,
-                            modifier = Modifier.fillMaxWidth().height(54.dp),
-                            shape = RoundedCornerShape(16.dp),
-                        ) { Text("联系家人", fontSize = 18.sp) }
-                        TextButton(
-                            onClick = { vm.taskAction("later") },
-                            enabled = !state.safetyAnalysisLoading,
-                            modifier = Modifier.align(Alignment.CenterHorizontally),
-                        ) { Text("30分钟后提醒") }
                     }
+                    OutlinedButton(
+                        onClick = { vm.taskAction("need_help"); dial(context, state.dashboard.contactPhone) },
+                        enabled = !state.safetyAnalysisLoading,
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        shape = RoundedCornerShape(16.dp),
+                    ) { Text("联系家人", fontSize = 18.sp) }
+                    TextButton(
+                        onClick = { vm.taskAction("later") },
+                        enabled = !state.safetyAnalysisLoading,
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                    ) { Text("30分钟后提醒") }
                 }
             }
         }
@@ -1476,51 +1470,7 @@ private fun MePage(state: UiState, vm: MainViewModel, onStartOnboarding: () -> U
         Text("我的设备", fontSize = 21.sp, fontWeight = FontWeight.Bold)
         DeviceRow(Icons.Rounded.Videocam, "萤石 C6c", deviceText(state.devices.cameraConfigured, state.devices.cameraOnline))
         DeviceRow(Icons.Rounded.Bed, "无感睡眠助手", if (state.devices.sleepConfigured) "已连接" else "等待连接")
-        if (BuildConfig.DEMO_MODE) {
-        Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("近期睡眠记录", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (state.devices.sleepDemoActive) "最近7晚记录已加载"
-                    else "还没有加载近期记录",
-                    color = Muted,
-                )
-                OutlinedButton(
-                    onClick = {
-                        if (state.devices.sleepDemoActive) vm.clearSleepDemo()
-                        else vm.loadSleepDemo()
-                    },
-                    enabled = !state.sleepActionLoading,
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text(if (state.devices.sleepDemoActive) "清除近期记录" else "加载最近7晚")
-                }
-                if (state.devices.sleepDemoActive) {
-                    OutlinedButton(
-                        onClick = {
-                            if (state.dashboard.sleep.nightAwakening.state == "waiting") {
-                                vm.activateNightAwakeningDemo()
-                            } else {
-                                vm.resetNightAwakeningDemo()
-                            }
-                        },
-                        enabled = !state.sleepActionLoading,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) {
-                        Text(
-                            if (state.dashboard.sleep.nightAwakening.state == "waiting") {
-                                "开启一次起夜关注"
-                            } else {
-                                "重置起夜关注"
-                            },
-                        )
-                    }
-                }
-            }
-        }
-        }
+
     }
 }
 

@@ -106,8 +106,6 @@ data class DeviceState(
     val cameraOnline: Boolean? = null,
     val sleepConfigured: Boolean = false,
     val sleepLastReportAt: String? = null,
-    val sleepDemoActive: Boolean = false,
-    val sleepDemoDatasetId: String? = null,
 )
 data class CameraSdkSession(
     val appKey: String,
@@ -255,8 +253,6 @@ class ProductApi(private val baseUrl: String) {
                 ?.optBoolean("online"),
             sleepConfigured = sleep.optBoolean("configured"),
             sleepLastReportAt = sleep.optionalString("last_report_at"),
-            sleepDemoActive = sleep.optBoolean("demo_active"),
-            sleepDemoDatasetId = sleep.optionalString("demo_dataset_id"),
         )
     }
 
@@ -403,7 +399,6 @@ class ProductApi(private val baseUrl: String) {
         method = "POST",
         readTimeoutMillis = 60_000,
     )
-    suspend fun loadSleepDemo() = request("/api/v1/devices/sleep/demo", method = "POST")
     suspend fun sleepHistory(): List<SleepHistoryNight> {
         val items = request("/api/v1/resident/sleep").optJSONArray("history") ?: return emptyList()
         return items.mapObjects { item ->
@@ -424,15 +419,6 @@ class ProductApi(private val baseUrl: String) {
             )
         }.take(7)
     }
-    suspend fun clearSleepDemo() = request("/api/v1/devices/sleep/demo", method = "DELETE")
-    suspend fun activateNightAwakeningDemo() = request(
-        "/api/v1/devices/sleep/demo/night-awakening",
-        method = "POST",
-    )
-    suspend fun resetNightAwakeningDemo() = request(
-        "/api/v1/devices/sleep/demo/night-awakening",
-        method = "DELETE",
-    )
 
     suspend fun sendAssistantMessage(
         conversationId: String?,
