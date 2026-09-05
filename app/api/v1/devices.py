@@ -235,10 +235,10 @@ def invalidate_c6c_safety_baseline(vision: VisionSafetyDep) -> dict[str, Any]:
 
 
 @router.get("/c6c/safety/latest")
-def latest_c6c_safety(store: StoreDep) -> dict[str, Any]:
+def latest_c6c_safety(store: StoreDep, vision: VisionSafetyDep) -> dict[str, Any]:
     checks = store.recent_checks(1)
     if not checks:
-        return {"analysis": None}
+        return {"analysis": None, "checking": vision.analysis_lock.locked()}
     check = checks[0]
     risk_level = check["result"]
     try:
@@ -259,8 +259,10 @@ def latest_c6c_safety(store: StoreDep) -> dict[str, Any]:
         headline = task["title"]
         action_text = task["suggestion"]
     return {
+        "checking": vision.analysis_lock.locked(),
         "analysis": {
             "risk_level": risk_level,
+            "task_id": task["id"] if task else None,
             "headline": headline,
             "action_text": action_text,
             "reason": check["detail"],

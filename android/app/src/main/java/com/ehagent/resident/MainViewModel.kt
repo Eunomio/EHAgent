@@ -50,6 +50,7 @@ data class UiState(
     val baselineError: String? = null,
     val safetyAnalysis: SafetyAnalysis? = null,
     val safetyAnalysisLoading: Boolean = false,
+    val safetyRemoteChecking: Boolean = false,
     val safetyAnalysisError: String? = null,
     val cameraMoveError: String? = null,
     val assistantMessages: List<AssistantMessage> = emptyList(),
@@ -72,6 +73,9 @@ data class UiState(
     val whiteNoiseVolume: Float = 0.35f,
     val whiteNoiseError: String? = null,
 )
+
+internal val UiState.safetyChecking: Boolean
+    get() = safetyAnalysisLoading || safetyRemoteChecking
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
@@ -107,6 +111,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         get() = preferences.getString("assistant_conversation_id", null)
         set(value) { preferences.edit().putString("assistant_conversation_id", value).apply() }
 
+    private var displayedCareEventId: String?
+        get() = preferences.getString("assistant_care_event:$backendUrl", null)
+        set(value) { preferences.edit().putString("assistant_care_event:$backendUrl", value).apply() }
+    private var autoAttemptedCareEvent: String? = null
+
+    fun synchronizeDailyConversation() {
+        val current = _state.value
+        if (current.loading || current.assistantLoading) return
+        val reportId = current.dashboard.sleep.reportId ?: return
+        val key = "assistant_sleep_report:$backendUrl"
+        val event = current.dashboard.activeCare?.takeIf { it.eventType == "sleep_change" }
+        val update = dailyConversationUpdate(
+            reportId, preferences.getString(key, null), event?.id, event?.sourceRef,
+            displayedCareEventId, current.assistantLoading,
+            current.proactiveCarePaused || current.sleepPaused,
+        )
+        preferences.edit().putString(key, reportId).apply()
+        if (update.reset) {
+            assistantConversationId = null
+            displayedCareEventId = null
+            _state.value = _state.value.copy(assistantMessages = emptyList(), assistantError = null)
+        }
+        update.startEventId?.let { eventId ->
+            val attemptKey = "$backendUrl|$eventId"
+            if (autoAttemptedCareEvent != attemptKey) {
+                autoAttemptedCareEvent = attemptKey
+                startProactiveEvent(eventId)
+            }
+        }
+    }
+
     private var nightAwakeningExpanded: Boolean
         get() = preferences.getBoolean("night_awakening_expanded", false)
         set(value) { preferences.edit().putBoolean("night_awakening_expanded", value).apply() }
@@ -130,7 +165,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init { refresh() }
 
     fun refresh() = viewModelScope.launch {
-        _state.value = _state.value.copy(loading = true, error = null, notice = null)
+        _state.value = _state.value.copy(loading = true, error = null)
         runCatching {
             val api = ProductApi(backendUrl)
             val dashboard = api.dashboard()
@@ -209,9 +244,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val api = ProductApi(backendUrl)
             // The latest result is the time-sensitive part. Refresh it independently so a
             // temporary failure in dashboard or baseline never hides an automatic check.
-            runCatching { api.latestSafetyAnalysis() }.onSuccess { analysis ->
-                _state.value = _state.value.copy(safetyAnalysis = analysis)
-                analysis?.let(::handleSafetyAlert)
+            runCatching { api.latestSafetyStatus() }.onSuccess { status ->
+                if (!_state.value.safetyAnalysisLoading) {
+                    _state.value = _state.value.copy(
+                        safetyAnalysis = status.analysis, safetyRemoteChecking = status.checking,
+                    )
+                    if (!status.checking) status.analysis?.let(::handleSafetyAlert)
+                }
+            }.onFailure {
+                _state.value = _state.value.copy(safetyRemoteChecking = false)
             }
             runCatching { api.dashboard() }.onSuccess { dashboard ->
                 _state.value = _state.value.copy(dashboard = dashboard)
@@ -234,6 +275,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun confirmSafetyCleaned() = viewModelScope.launch {
         val current = _state.value
+        if (current.safetyChecking) return@launch
         val id = current.dashboard.safety.taskId ?: return@launch
         when {
             current.cameraPaused -> {
@@ -251,7 +293,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         _state.value = current.copy(
             safetyAnalysisLoading = true,
-            safetyAnalysisError = null,
+            safetyAnalysisError = null, notice = null,
         )
         runCatching {
             val api = ProductApi(backendUrl)
@@ -341,9 +383,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun analyzeSafety() = viewModelScope.launch {
+        if (_state.value.safetyChecking) return@launch
         _state.value = _state.value.copy(
             safetyAnalysisLoading = true,
-            safetyAnalysisError = null,
+            safetyAnalysisError = null, notice = null,
         )
         runCatching { ProductApi(backendUrl).analyzeSafety() }
             .onSuccess { analysis ->
@@ -370,7 +413,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) = viewModelScope.launch {
         _state.value = _state.value.copy(
             safetyAnalysisLoading = true,
-            safetyAnalysisError = null,
+            safetyAnalysisError = null, notice = null,
         )
         runCatching { ProductApi(backendUrl).analyzeSafetyFrame(image, preview, baselineImage) }
             .onSuccess { analysis ->
@@ -759,12 +802,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startProactiveEvent(eventId: String) = viewModelScope.launch {
         if (_state.value.assistantLoading) return@launch
-        _state.value = _state.value.copy(assistantLoading = true, assistantError = null)
-        runCatching { ProductApi(backendUrl).startProactiveEvent(eventId) }
-            .onSuccess { result ->
+        // Drop the local pointer immediately so a delayed old-history read cannot restore yesterday.
+        assistantConversationId = null
+        _state.value = _state.value.copy(
+            assistantLoading = true, assistantError = null, assistantMessages = emptyList(),
+        )
+        runCatching {
+            val api = ProductApi(backendUrl)
+            val result = api.startProactiveEvent(eventId)
+            val history = runCatching { api.assistantConversation(result.conversationId) }
+                .getOrDefault(listOf(result.assistantMessage))
+            result to history
+        }.onSuccess { (result, history) ->
                 assistantConversationId = result.conversationId
+                displayedCareEventId = eventId
                 _state.value = _state.value.copy(
-                    assistantMessages = listOf(result.assistantMessage),
+                    assistantMessages = history,
                     assistantLoading = false,
                 )
                 refreshSafetyStatus()
@@ -860,11 +913,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.assistantMessages.isNotEmpty()) return@launch
         runCatching { ProductApi(backendUrl).assistantConversation(conversationId) }
             .onSuccess { messages ->
-                _state.value = _state.value.copy(assistantMessages = messages, assistantError = null)
+                if (assistantConversationId == conversationId && !_state.value.assistantLoading) {
+                    _state.value = _state.value.copy(assistantMessages = messages, assistantError = null)
+                }
             }
             .onFailure {
-                assistantConversationId = null
-                _state.value = _state.value.copy(assistantMessages = emptyList())
+                if (assistantConversationId == conversationId && !_state.value.assistantLoading) {
+                    assistantConversationId = null
+                    _state.value = _state.value.copy(assistantMessages = emptyList())
+                }
             }
     }
 

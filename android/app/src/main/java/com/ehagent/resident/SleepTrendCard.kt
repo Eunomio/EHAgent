@@ -44,14 +44,14 @@ internal fun RecentSleepTrendCard(historyNewestFirst: List<SleepHistoryNight>) {
                 verticalAlignment = Alignment.Bottom,
             ) {
                 nights.forEachIndexed { index, item ->
-                    val minutes = item.awakeAfterReturnMinutes ?: 0
-                    val needsAttention = minutes >= 55
+                    val minutes = item.awakeAfterReturnMinutes
+                    val needsAttention = (minutes ?: 0) >= 55
                     Column(
                         Modifier.weight(1f).clickable { selected = index },
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text(if (minutes > 0) "$minutes" else "—", fontSize = 12.sp, color = if (needsAttention) Color(0xFFB45309) else Brand)
-                        Box(
+                        Text(minutes?.toString() ?: "—", fontSize = 12.sp, color = if (needsAttention) Color(0xFFB45309) else Brand)
+                        if (minutes != null) Box(
                             Modifier.fillMaxWidth().height((minutes.coerceAtLeast(5) * 1.45f).dp)
                                 .clip(RoundedCornerShape(topStart = 7.dp, topEnd = 7.dp))
                                 .background(if (needsAttention) Warm else if (selected == index) Brand else Brand.copy(alpha = .42f)),
@@ -67,10 +67,19 @@ internal fun RecentSleepTrendCard(historyNewestFirst: List<SleepHistoryNight>) {
                 night.sleepScore?.let { Text("睡眠参考分 ${it.toInt()}", color = Brand) }
             }
             Text("${clock(night.sleepStart)} 入睡 · ${clock(night.sleepEnd)} 起床 · 共睡 ${duration(night.durationMinutes)}")
-            TrendRow("夜间离床", "${night.bedExitCount ?: 0}次", "回床后清醒 ${night.awakeAfterReturnMinutes ?: 0}分钟")
-            TrendRow("睡眠构成", "清醒${night.awakeMinutes ?: 0}分", "浅睡${night.lightSleepMinutes ?: 0} · 深睡${night.deepSleepMinutes ?: 0} · 快速眼动${night.remSleepMinutes ?: 0}分")
-            TrendRow("平均体征", "心率${night.heartRate?.toInt() ?: 0}次/分", "呼吸${night.respiratoryRate ?: 0.0}次/分")
-            if ((nights[3].awakeAfterReturnMinutes ?: 0) >= 55 && (nights[4].awakeAfterReturnMinutes ?: 0) >= 55) {
+            TrendRow("夜间离床", "${night.bedExitCount ?: "—"}次", "回床后清醒 ${night.awakeAfterReturnMinutes ?: "—"}分钟")
+            TrendRow("睡眠构成", "清醒${night.awakeMinutes ?: "—"}分", "浅睡${night.lightSleepMinutes ?: "—"} · 深睡${night.deepSleepMinutes ?: "—"} · 快速眼动${night.remSleepMinutes ?: "—"}分")
+            TrendRow("平均体征", "心率${night.heartRate?.toInt() ?: "—"}次/分", "呼吸${night.respiratoryRate ?: "—"}次/分")
+            if ((nights[3].awakeAfterReturnMinutes ?: 0) >= 55 &&
+                (nights[4].awakeAfterReturnMinutes ?: 0) >= 55 &&
+                nights.takeLast(2).all {
+                    val minutes = it.awakeAfterReturnMinutes
+                    minutes != null && minutes < minOf(
+                        nights[3].awakeAfterReturnMinutes ?: 0,
+                        nights[4].awakeAfterReturnMinutes ?: 0,
+                    )
+                }
+            ) {
                 Text("第4、5晚起夜后较久才再次入睡，最近两晚已有好转。", color = Color(0xFF9A6700), fontWeight = FontWeight.SemiBold)
             }
         }

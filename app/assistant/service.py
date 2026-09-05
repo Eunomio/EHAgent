@@ -448,7 +448,8 @@ class AssistantService:
                     "assistant_message": conversation["messages"][-1],
                 }
         conversation = self.store.create_assistant_conversation(event["title"])
-        opening, sources, source = event["message"], [], "proactive_rule"
+        sources: list[dict[str, Any]] = []
+        opening, source = event["message"], "proactive_rule"
         if event["event_type"] == "sleep_change":
             context, _ = self.context_builder.build()
             context["sleep_care"] = self._sleep_care_context(event)

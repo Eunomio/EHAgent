@@ -153,6 +153,12 @@ private enum class Page(val label: String, val icon: ImageVector) {
 private fun ResidentApp(viewModel: MainViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf(Page.HOME) }
+    LaunchedEffect(
+        state.dashboard.sleep.reportId, state.dashboard.activeCare?.id,
+        state.assistantLoading, state.loading, state.proactiveCarePaused, state.sleepPaused,
+    ) {
+        viewModel.synchronizeDailyConversation()
+    }
     val mainPages = remember { listOf(Page.HOME, Page.SAFETY, Page.SLEEP, Page.PRIVACY, Page.ME) }
     LaunchedEffect(viewModel) {
         while (isActive) {
@@ -386,8 +392,8 @@ private fun HomeAssistantPanel(state: UiState, vm: MainViewModel, onAssistant: (
                     color = Color.White,
                     fontSize = if (compactLayout) 20.sp else 24.sp,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    softWrap = false,
+                    maxLines = 2,
+                    softWrap = true,
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(6.dp))
@@ -534,7 +540,6 @@ private fun ProactiveCareCard(event: ProactiveEvent, onClick: () -> Unit) {
                 Icon(Icons.Rounded.ChevronRight, "回应小安")
             }
             Text(event.message, fontSize = 17.sp, lineHeight = 25.sp, maxLines = 3)
-            Text("为什么询问：${event.reason}", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
         }
     }
 }
@@ -614,10 +619,30 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
         PageTitle("居家安全", "留意每天常走的地方", Icons.Rounded.HealthAndSafety)
         CameraStreamCard(state, vm)
         SafetyCheckCard(state, vm)
-        if (state.dashboard.safety.taskId == null) {
-            EmptyCard(Icons.Rounded.CheckCircle, "当前没有待处理提醒", "摄像头完成检查后，结果会显示在这里。")
+        state.notice?.let { NoticeBanner(it) }
+        state.error?.let { ConnectionBanner(it) }
+        if (state.safetyChecking) {
+            // The checking card above replaces the previous task while a new result is pending.
+        } else if (state.dashboard.safety.taskId == null) {
+            val result = state.safetyAnalysis
+            if (result?.riskLevel in setOf("clear", "low")) {
+                Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = BrandSoft)) {
+                    Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.CheckCircle, null, tint = Brand, modifier = Modifier.size(30.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text("当前没有待处理提醒", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            Text(result?.actionText.orEmpty(), color = Muted)
+                        }
+                    }
+                }
+            } else if (result == null) {
+                EmptyCard(Icons.Rounded.Search, "等待通道检查", "检查完成后，这里会显示结果。")
+            }
         } else {
-            val riskLevel = state.safetyAnalysis?.riskLevel
+            val riskLevel = state.safetyAnalysis?.takeIf {
+                it.taskId == state.dashboard.safety.taskId
+            }?.riskLevel
             val riskColor = safetyRiskForeground(riskLevel)
             val reminderTitle = if (riskLevel == null) {
                 "待处理提醒"
@@ -682,7 +707,7 @@ private fun SafetyPage(state: UiState, vm: MainViewModel) {
 
 @Composable
 private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
-    val result = state.safetyAnalysis
+    val result = state.safetyAnalysis.takeUnless { state.safetyChecking }
     val resultColor = safetyRiskBackground(result?.riskLevel)
     Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = resultColor)) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
@@ -696,12 +721,20 @@ private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
                     Text("检查当前通道", fontSize = 21.sp, fontWeight = FontWeight.Bold)
                     Text(
                         when {
+                            state.safetyChecking -> "正在识别通道内的物品"
                             state.safetyBaselineNeedsRefresh -> "摄像头角度变化较大，正在重新识别通道"
                             state.safetyBaseline.ready -> "自动监测中，画面持续变化后会检查"
                             else -> "正在自动识别通道"
                         },
                         color = Muted,
                     )
+                }
+            }
+            if (state.safetyChecking) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(9.dp))
+                    Text(if (state.safetyAnalysis == null) "正在检查…" else "正在复查…")
                 }
             }
             result?.let {
@@ -728,21 +761,16 @@ private fun SafetyCheckCard(state: UiState, vm: MainViewModel) {
                 }
             }
             state.safetyAnalysisError?.let { Text(it, color = Color(0xFFB44336)) }
-            Button(
-                onClick = vm::analyzeSafety,
-                enabled = state.safetyBaseline.ready && !state.safetyBaselineNeedsRefresh &&
-                    !state.safetyAnalysisLoading && !state.cameraPaused,
-                modifier = Modifier.fillMaxWidth().height(54.dp),
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                if (state.safetyAnalysisLoading) {
-                    CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
-                    Spacer(Modifier.width(9.dp))
-                    Text("正在检查…", fontSize = 18.sp)
-                } else {
-                    Icon(Icons.Rounded.CameraAlt, null)
+            if (!state.safetyChecking) {
+                Button(
+                    onClick = vm::analyzeSafety,
+                    enabled = state.safetyBaseline.ready && !state.safetyBaselineNeedsRefresh && !state.cameraPaused,
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Icon(if (state.safetyAnalysisError != null) Icons.Rounded.Refresh else Icons.Rounded.CameraAlt, null)
                     Spacer(Modifier.width(8.dp))
-                    Text("立即检查通道", fontSize = 18.sp)
+                    Text(if (state.safetyAnalysisError != null) "重新检查" else "立即检查通道", fontSize = 18.sp)
                 }
             }
         }
@@ -822,7 +850,7 @@ private fun CameraStreamCard(state: UiState, vm: MainViewModel) {
                     state.cameraSession,
                     vm,
                     state.cameraMoveError,
-                    state.safetyAnalysis,
+                    state.safetyAnalysis.takeUnless { state.safetyChecking },
                     state.safetyBaselineNeedsRefresh,
                 )
                 else -> {
@@ -963,7 +991,7 @@ private fun RiskRegionOverlay(regions: List<HazardRegion>, modifier: Modifier = 
     Box(modifier) {
         Canvas(Modifier.fillMaxSize()) {
             regions.forEach { region ->
-                val color = if (region.riskLevel == "low") Color(0xFFFFB300) else Color(0xFFE53935)
+                val color = safetyRiskForeground(region.riskLevel)
                 val left = size.width * region.x1 / 1000f
                 val top = size.height * region.y1 / 1000f
                 val width = size.width * (region.x2 - region.x1) / 1000f
@@ -996,10 +1024,10 @@ private fun RiskRegionOverlay(regions: List<HazardRegion>, modifier: Modifier = 
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             regions.distinctBy { it.label to it.riskLevel }.take(3).forEach { region ->
-                val color = if (region.riskLevel == "low") Color(0xFFFFB300) else Color(0xFFE53935)
+                val color = safetyRiskForeground(region.riskLevel)
                 Surface(color = Color.Black.copy(alpha = .68f), shape = RoundedCornerShape(6.dp)) {
                     Text(
-                        "${if (region.riskLevel == "low") "留意" else "需整改"} · ${region.label}",
+                        "${safetyRiskLabel(region.riskLevel)} · ${region.label}",
                         color = color,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -1128,13 +1156,13 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
     val sleep = state.dashboard.sleep
     PageBody {
         PageTitle("睡眠", "看看昨晚休息得怎么样", Icons.Rounded.Bedtime)
+        state.notice?.let { NoticeBanner(it) }
+        state.error?.let { ConnectionBanner(it) }
+        sleep.weeklyOverview?.let { week ->
+            WeeklySleepCard(week)
+        }
         if (sleep.duration == null) {
             EmptyCard(Icons.Rounded.Bed, "还没有睡眠记录", "连接无感睡眠助手后，这里会显示真实睡眠数据。")
-            NightAwakeningCard(
-                sleep.nightAwakening,
-                state.nightAwakeningExpanded,
-                vm::toggleNightAwakeningExpanded,
-            )
         } else {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1157,21 +1185,14 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                 }
             }
             RecentSleepTrendCard(state.sleepHistory)
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                if (maxWidth < 350.dp) {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.Air, "平均呼吸", sleep.respiratoryRate?.let { formatOne(it) } ?: "—", "次/分")
-                        VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
-                    }
-                } else {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        VitalCard(Modifier.weight(1f), Icons.Rounded.Air, "平均呼吸", sleep.respiratoryRate?.let { formatOne(it) } ?: "—", "次/分")
-                        VitalCard(Modifier.weight(1f), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
-                    }
-                }
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SleepCompactVital(Modifier.weight(1f).fillMaxHeight(), Icons.Rounded.Air, "平均呼吸", sleep.respiratoryRate?.let { formatOne(it) } ?: "—", "次/分")
+                SleepCompactVital(Modifier.weight(1f).fillMaxHeight(), Icons.Rounded.Favorite, "平均心率", sleep.heartRate?.let { formatOne(it) } ?: "—", "次/分")
+                SleepCompactVital(Modifier.weight(1f).fillMaxHeight(), Icons.Rounded.DirectionsWalk, "夜间离床", sleep.bedExitCount?.toString() ?: "—", "次")
             }
-            VitalCard(Modifier.fillMaxWidth(), Icons.Rounded.DirectionsWalk, "夜间离床", sleep.bedExitCount?.toString() ?: "—", "次")
-            sleep.baselineMessage?.let { message ->
+            sleep.baselineMessage?.takeUnless {
+                sleep.weeklyOverview != null && sleep.baselineState == "baseline_building"
+            }?.let { message ->
                 Card(
                     shape = RoundedCornerShape(22.dp),
                     colors = CardDefaults.cardColors(
@@ -1194,11 +1215,6 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                     }
                 }
             }
-            NightAwakeningCard(
-                sleep.nightAwakening,
-                state.nightAwakeningExpanded,
-                vm::toggleNightAwakeningExpanded,
-            )
             SleepStagesCard(sleep)
             sleep.analysis?.let {
                 Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = BrandSoft)) {
@@ -1218,12 +1234,23 @@ private fun SleepPage(state: UiState, vm: MainViewModel) {
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 }
-                Text("重新同步昨晚数据", fontSize = 17.sp)
+                Text("刷新睡眠记录", fontSize = 17.sp)
             }
-            sleep.syncMessage?.let { Text("同步状态：$it", color = Muted, fontSize = 14.sp) }
             Text("报告用于了解近期睡眠变化，不代替医疗判断。身体不舒服时，请及时联系家人或医生。", color = Muted, lineHeight = 24.sp)
         }
         SettingsSwitch("暂停睡眠提醒", "睡眠数据仍会保留", state.sleepPaused, vm::setSleepPaused)
+    }
+}
+
+@Composable
+private fun SleepCompactVital(modifier: Modifier, icon: ImageVector, label: String, value: String, unit: String) {
+    Card(modifier, shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(icon, null, tint = Brand, modifier = Modifier.size(24.dp))
+            Text(label, fontSize = 16.sp, color = Muted)
+            Text(value, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text(unit, fontSize = 15.sp, color = Muted)
+        }
     }
 }
 

@@ -39,6 +39,8 @@ data class NightAwakening(
     val disclaimer: String = "这是根据睡眠变化给出的预防性提示，不代表已经预测到跌倒。",
 )
 data class SleepCard(
+    val reportId: String? = null,
+    val weeklyOverview: WeeklySleepOverview? = null,
     val headline: String = "睡眠数据暂未同步",
     val duration: Int? = null,
     val respiratoryRate: Double? = null,
@@ -61,7 +63,20 @@ data class SleepCard(
     val syncMessage: String? = null,
     val nightAwakening: NightAwakening = NightAwakening(),
 )
+
+data class WeeklySleepOverview(
+    val message: String,
+    val duration: Int?,
+    val sleepTime: String?,
+    val wakeTime: String?,
+    val heartRate: Double?,
+    val respiratoryRate: Double?,
+    val durationSeries: List<WeeklySleepNight> = emptyList(),
+)
+
+data class WeeklySleepNight(val date: String, val minutes: Int?)
 data class ProactiveEvent(
+    val sourceRef: String? = null,
     val id: String,
     val eventType: String,
     val title: String,
@@ -118,6 +133,8 @@ data class SafetyBaselineStatus(
     val ready: Boolean = false,
     val capturedAt: String? = null,
 )
+data class SafetyStatus(val analysis: SafetyAnalysis?, val checking: Boolean = false)
+
 data class SafetyAnalysis(
     val riskLevel: String,
     val headline: String,
@@ -200,7 +217,7 @@ class ProductApi(private val baseUrl: String) {
     suspend fun health(): Boolean = request("/api/v1/health").optString("status") == "ok"
 
     suspend fun dashboard(): Dashboard {
-        val root = request("/api/v1/resident/dashboard")
+        val root = request("/api/v1/resident/dashboard?data_mode=actual")
         val safety = root.getJSONObject("safety")
         val sleep = root.getJSONObject("sleep")
         val summary = sleep.optJSONObject("summary")
@@ -214,6 +231,20 @@ class ProductApi(private val baseUrl: String) {
             greeting = root.optString("greeting", "您好"), subtitle = root.optString("subtitle", "今天也安心生活"),
             safety = SafetyCard(safety.optString("status"), safety.optString("headline"), safety.optString("detail"), safety.optJSONObject("task")?.optString("id")),
             sleep = SleepCard(
+                reportId = summary?.optionalString("id"),
+                weeklyOverview = sleep.optJSONObject("weekly_overview")?.let {
+                    WeeklySleepOverview(
+                        it.optString("message"), it.optionalInt("duration_minutes"),
+                        it.optionalString("sleep_time"), it.optionalString("wake_time"),
+                        it.optionalDouble("heart_rate"), it.optionalDouble("respiratory_rate"),
+                        it.optJSONArray("duration_series")?.let { points ->
+                            List(points.length()) { index ->
+                                val point = points.getJSONObject(index)
+                                WeeklySleepNight(point.getString("date"), point.optionalInt("minutes"))
+                            }
+                        } ?: emptyList(),
+                    )
+                },
                 headline = sleep.optString("headline"),
                 duration = summary?.optionalInt("duration_minutes"),
                 respiratoryRate = summary?.optionalDouble("respiratory_rate"),
@@ -320,11 +351,12 @@ class ProductApi(private val baseUrl: String) {
         return root.toSafetyAnalysis()
     }
 
-    suspend fun latestSafetyAnalysis(): SafetyAnalysis? {
+    suspend fun latestSafetyStatus(): SafetyStatus {
         val root = request("/api/v1/devices/c6c/safety/latest")
-        val analysis = root.optJSONObject("analysis") ?: return null
-        return analysis.toSafetyAnalysis(flat = true)
+        return SafetyStatus(root.optJSONObject("analysis")?.toSafetyAnalysis(flat = true), root.optBoolean("checking"))
     }
+
+    suspend fun latestSafetyAnalysis(): SafetyAnalysis? = latestSafetyStatus().analysis
 
     private fun JSONObject.toSafetyAnalysis(flat: Boolean = false): SafetyAnalysis {
         val assessment = if (flat) this else getJSONObject("assessment")
@@ -400,7 +432,8 @@ class ProductApi(private val baseUrl: String) {
         readTimeoutMillis = 60_000,
     )
     suspend fun sleepHistory(): List<SleepHistoryNight> {
-        val items = request("/api/v1/resident/sleep").optJSONArray("history") ?: return emptyList()
+        val items = request("/api/v1/resident/sleep?data_mode=actual")
+            .optJSONArray("history") ?: return emptyList()
         return items.mapObjects { item ->
             SleepHistoryNight(
                 reportDate = item.optString("report_date"),
@@ -598,6 +631,7 @@ private fun JSONObject.toAssistantAction(): AssistantAction = AssistantAction(
 )
 
 private fun JSONObject.toProactiveEvent() = ProactiveEvent(
+    sourceRef = optionalString("source_ref"),
     id = getString("id"),
     eventType = getString("event_type"),
     title = getString("title"),

@@ -12,8 +12,8 @@ android {
         applicationId = "com.ehagent.resident"
         minSdk = 26
         targetSdk = 35
-        versionCode = 23
-        versionName = "0.17.0"
+        versionCode = 30
+        versionName = "0.19.0"
     }
 
     flavorDimensions += "content"

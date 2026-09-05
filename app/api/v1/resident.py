@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.dependencies import LlmDep, SettingsDep, StoreDep
 from app.sleep.baseline import compare_to_personal_baseline
 from app.sleep.night_awakening import waiting_payload
+from app.sleep.overview import weekly_overview
 
 router = APIRouter(prefix="/resident", tags=["resident"])
 
@@ -122,12 +123,20 @@ def night_awakening_payload(
 
 
 @router.get("/dashboard")
-def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
+def dashboard(
+    store: StoreDep, settings: SettingsDep, data_mode: Literal["auto", "actual"] = "auto",
+) -> dict[str, Any]:
     preferences = settings_payload(store)
-    sleep_history = store.sleep_report_history(15)
+    sleep_history = (store.sleep_history(15, exclude_demo=True) if data_mode == "actual"
+                     else store.sleep_report_history(15))
     sleep = sleep_history[0] if sleep_history else None
     sleep_analysis = store.latest_llm_output("sleep", sleep["id"]) if sleep else None
     task = store.latest_task()
+    active_care = store.latest_proactive_event()
+    if data_mode == "actual" and active_care and active_care["event_type"] == "sleep_change":
+        report_ids = {item["id"] for item in sleep_history}
+        if active_care.get("source_ref") not in report_ids:
+            active_care = None
     hour = datetime.now().hour
     greeting = "早上好" if hour < 11 else "下午好" if hour < 18 else "晚上好"
     return {
@@ -144,6 +153,7 @@ def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
             "summary": resident_sleep(sleep),
             "analysis": sleep_analysis,
             "baseline": compare_to_personal_baseline(sleep_history),
+            "weekly_overview": weekly_overview(store),
             "data_source": sleep.get("source") if sleep else None,
             "bed_exit": {
                 "count": sleep.get("bed_exit_count") if sleep else None,
@@ -163,7 +173,7 @@ def dashboard(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
             "contact_phone": preferences["contact_phone"],
         },
         "care": {
-            "active": store.latest_proactive_event(),
+            "active": active_care,
             "paused": preferences["proactive_care_paused"],
             "confirmed_profile_count": len(store.profile_facts(("confirmed",))),
         },
@@ -189,8 +199,11 @@ def act_on_task(task_id: str, payload: TaskAction, store: StoreDep) -> dict[str,
 
 
 @router.get("/sleep")
-def sleep(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
-    history = store.sleep_report_history(15)
+def sleep(
+    store: StoreDep, settings: SettingsDep, data_mode: Literal["auto", "actual"] = "auto",
+) -> dict[str, Any]:
+    history = (store.sleep_history(15, exclude_demo=True) if data_mode == "actual"
+               else store.sleep_report_history(15))
     latest = history[0] if history else None
     return {
         "device_name": settings.sleep_device_name,
@@ -198,6 +211,7 @@ def sleep(store: StoreDep, settings: SettingsDep) -> dict[str, Any]:
         "history": [resident_sleep(item) for item in history],
         "analysis": store.latest_llm_output("sleep", latest["id"]) if latest else None,
         "baseline": compare_to_personal_baseline(history),
+        "weekly_overview": weekly_overview(store),
         "baseline_ready": len(history) >= 8,
         "alert": sleep_alert(history),
         "alerts_paused": settings_payload(store)["sleep_alerts_paused"],

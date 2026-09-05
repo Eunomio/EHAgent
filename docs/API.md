@@ -119,3 +119,10 @@ Windows 本地 Agent 默认监听 `http://电脑IP:8000`，OpenAPI 交互文档�
 # 白噪音聊天动作（2026-09-05）
 
 `POST /api/v1/assistant/chat` 返回的 `assistant_message.actions` 可包含 `kind=start_intervention`、`payload.intervention_id=white_noise_30min`。新增可选布尔字段 `payload.auto_start`：默认 false，表示用户点击播放；true 表示本轮明确要求现在播放，Android 自动调用 `POST /api/v1/assistant/actions/{id}/confirm` 后打开播放器。旧客户端忽略此字段时仍可点击播放。读取历史消息不触发自动播放；模型判断失败不授权自动播放。接口确认幂等，重复确认不会新增干预会话。
+
+
+## Actual 展示数据与检查状态
+
+`GET /api/v1/resident/dashboard?data_mode=actual` 与 `GET /api/v1/resident/sleep?data_mode=actual` 返回非演示睡眠。`weekly_overview` 包含上一自然周的整体说明、平均睡眠、通常入睡/起床、平均心率/呼吸和7个日期的 `duration_series`；缺失值为 null。省略参数继续使用原有自动选择行为。
+
+`GET /api/v1/devices/c6c/safety/latest` 返回 `checking` 表示分析锁是否处于执行中；没有结果时 `analysis` 仍为 null。结果内包含 `task_id`，客户端应避免把不匹配的检查等级显示到旧任务上。
